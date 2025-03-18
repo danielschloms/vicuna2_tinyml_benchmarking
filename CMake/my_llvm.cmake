@@ -1,6 +1,6 @@
 
-set(RISCV_GCC_PREFIX "$ENV{RISCV}")
-set(RISCV_GCC_BASENAME "riscv64-unknown-elf")
+set(RISCV_GCC_PREFIX "$ENV{RISCV_NO_MLIB}/${RISCV_ARCH}")
+set(RISCV_GCC_BASENAME "riscv32-unknown-elf")
 
 set(CMAKE_C_COMPILER clang-18)
 set(CMAKE_CXX_COMPILER clang-18)
