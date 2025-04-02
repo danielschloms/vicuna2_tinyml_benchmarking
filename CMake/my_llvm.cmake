@@ -1,4 +1,3 @@
-
 set(RISCV_GCC_PREFIX "$ENV{RISCV_NO_MLIB}/${RISCV_ARCH}")
 set(RISCV_GCC_BASENAME "riscv32-unknown-elf")
 

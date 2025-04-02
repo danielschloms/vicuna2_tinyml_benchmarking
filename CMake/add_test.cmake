@@ -36,7 +36,7 @@ macro(add_Benchmark TEST SOURCE_DIR TEST_BUILD_DIR)
 
     add_custom_command(TARGET ${TEST_NAME}
                        POST_BUILD
-                       COMMAND ${RISCV_LLVM_PREFIX}/llvm-objcopy -O binary ${TEST_NAME}.elf ${TEST_NAME}.bin
+                       COMMAND llvm-objcopy -O binary ${TEST_NAME}.elf ${TEST_NAME}.bin
                        COMMAND srec_cat ${TEST_NAME}.bin -binary -offset 0x0000 -byte-swap 4 -o ${TEST_NAME}.vmem -vmem
                        COMMAND rm -f prog_${TEST_NAME}.txt
                        COMMAND echo -n "${TEST_BUILD_DIR}/${TEST_NAME}.vmem ${TEST_BUILD_DIR}/${TEST_NAME}_unused.txt " > prog_${TEST_NAME}.txt
@@ -45,7 +45,7 @@ macro(add_Benchmark TEST SOURCE_DIR TEST_BUILD_DIR)
                        COMMAND echo -n "${TEST_BUILD_DIR}/${TEST_NAME}_vicuna_sim_out.txt " >> prog_${TEST_NAME}.txt
                        COMMAND readelf -s ${TEST_NAME}.elf | sed '2,13 s/ //1' | grep vdata_start | cut -d " " -f 6 | tr [=["\n"]=] " " >> prog_${TEST_NAME}.txt
                        COMMAND readelf -s ${TEST_NAME}.elf | sed '2,13 s/ //1' | grep vdata_end | cut -d " " -f 6 | tr [=["\n"]=] " " >> prog_${TEST_NAME}.txt
-                       COMMAND ${RISCV_LLVM_PREFIX}/llvm-objdump -D ${TEST_NAME}.elf > ${TEST_NAME}_dump.txt
+                       COMMAND llvm-objdump -D ${TEST_NAME}.elf > ${TEST_NAME}_dump.txt
                        )
     
     #VERY DANGEROUS TO USE TRACE

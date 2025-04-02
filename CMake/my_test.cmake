@@ -27,7 +27,7 @@ macro(add_bin TEST SOURCE_DIR TEST_BUILD_DIR)
 
     add_custom_command(TARGET ${TEST_NAME}
                        POST_BUILD
-                       COMMAND llvm-objcopy -O binary ${TEST_NAME}.elf ${TEST_NAME}.bin
+                       COMMAND ${CMAKE_OBJCOPY} -O binary ${TEST_NAME}.elf ${TEST_NAME}.bin
                        COMMAND srec_cat ${TEST_NAME}.bin -binary -offset 0x0000 -byte-swap 4 -o ${TEST_NAME}.vmem -vmem
                        COMMAND rm -f prog_${TEST_NAME}.txt
                        COMMAND echo -n "${TEST_BUILD_DIR}/${TEST_NAME}.vmem ${TEST_BUILD_DIR}/${TEST_NAME}_unused.txt " > prog_${TEST_NAME}.txt
@@ -36,7 +36,7 @@ macro(add_bin TEST SOURCE_DIR TEST_BUILD_DIR)
                        COMMAND echo -n "${TEST_BUILD_DIR}/${TEST_NAME}_vicuna_sim_out.txt " >> prog_${TEST_NAME}.txt
                        COMMAND readelf -s ${TEST_NAME}.elf | sed '2,13 s/ //1' | grep vdata_start | cut -d " " -f 6 | tr [=["\n"]=] " " >> prog_${TEST_NAME}.txt
                        COMMAND readelf -s ${TEST_NAME}.elf | sed '2,13 s/ //1' | grep vdata_end | cut -d " " -f 6 | tr [=["\n"]=] " " >> prog_${TEST_NAME}.txt
-                       COMMAND llvm-objdump -D ${TEST_NAME}.elf > ${TEST_NAME}_dump.txt
+                       COMMAND ${CMAKE_OBJDUMP} -D ${TEST_NAME}.elf > ${TEST_NAME}_dump.txt
                        )
     
     #VERY DANGEROUS TO USE TRACE
@@ -56,7 +56,7 @@ macro(add_bin TEST SOURCE_DIR TEST_BUILD_DIR)
              COMMAND ./${MODEL_DIR}/verilated_model ${TEST_BUILD_DIR}/prog_${TEST_NAME}.txt ${MEM_W} 4194304 ${MEM_LATENCY} 1 ${INST_TRACE_ARGS} ${MEM_TRACE_ARGS} ${VCD_TRACE_ARGS}  #TODO: PASS ALL THESE ARGUMENTS IN FROM USER
              WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/../..)
              
-    set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 0) #TODO: Find a reasonable timeout for these tests
+    set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 1000) #TODO: Find a reasonable timeout for these tests
 
     message(STATUS "Successfully added ${TEST_NAME}")
 
