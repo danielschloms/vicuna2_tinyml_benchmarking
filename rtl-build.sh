@@ -37,9 +37,9 @@ cd $SRC_BUILD_DIR
 SOURCE_FLAGS="-DMIN_VLEN=$VLEN"
 
 if [ "$#" -eq 1 ] && [ $1 = "debug" ]; then
-    cmake .. -DRISCV_ARCH=$ARCH $SOURCE_FLAGS -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-g -Og"
+    cmake .. -DRISCV_ARCH=$ARCH $SOURCE_FLAGS -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-g -Og" -DCMAKE_EXPORT_COMPILE_COMMANDS=On
 elif [ "$#" -eq 0 ] || [ $1 = "release" ]; then
-    cmake .. -DRISCV_ARCH=$ARCH $SOURCE_FLAGS -DCMAKE_BUILD_TYPE=Release
+    cmake .. -DRISCV_ARCH=$ARCH $SOURCE_FLAGS -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=On
 else
     echo "Usage: build.sh [debug | release]"
     exit 1
