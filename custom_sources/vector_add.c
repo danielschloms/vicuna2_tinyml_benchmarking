@@ -1,7 +1,10 @@
+#include "terminate.h"
 #include <riscv_vector.h>
 
 int main() {
-  for (int rounds = 0; rounds < 100; rounds++) {
+
+  for (int i = 0; i < 100; i++) {
+    /* code */
 
     int32_t a[] = {1,  2,  3,  4,  5,  6,  7,  8,  9,  10,
                    11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
@@ -16,7 +19,8 @@ int main() {
     int32_t result[vl];
     int32_t *result_ptr = result;
 
-    for (size_t avl; vl > 0; vl -= avl, a_ptr += avl, b_ptr += avl) {
+    for (size_t avl; vl > 0;
+         vl -= avl, a_ptr += avl, b_ptr += avl, result_ptr += avl) {
       avl = __riscv_vsetvl_e32m1(vl);
       vint32m1_t va = __riscv_vle32_v_i32m1(a_ptr, vl);
       vint32m1_t vb = __riscv_vle32_v_i32m1(b_ptr, vl);
@@ -25,5 +29,6 @@ int main() {
                             avl);
     }
   }
+  terminate_success();
   return 0;
 }

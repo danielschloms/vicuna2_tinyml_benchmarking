@@ -23,9 +23,10 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/../CMake/my_test.cmake)
 # limitations under the License.
 #
 
-add_definitions(-fno-rtti)          #Needed for GCC to resolve virtual delete function scope issue
-add_definitions(-fno-exceptions)    #Needed for GCC to resolve virtual delete function scope issue
+# add_definitions(-fno-rtti)          #Needed for GCC to resolve virtual delete function scope issue
+# add_definitions(-fno-exceptions)    #Needed for GCC to resolve virtual delete function scope issue
 
-add_bin(vector_add ${CMAKE_CURRENT_SOURCE_DIR} ${BUILD_DIR}/custom)
+add_bin(vector_add ${CMAKE_CURRENT_SOURCE_DIR} ${BUILD_DIR}/custom_sources)
+add_bin(scalar_add ${CMAKE_CURRENT_SOURCE_DIR} ${BUILD_DIR}/custom_sources)
 
 
