@@ -4,6 +4,12 @@
 
 #include "Vvproc_top.h"
 
+#include <algorithm>
+#include <array>
+#include <concepts>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -32,7 +38,56 @@ typedef int VerilatedTrace_t;
 #endif
 #endif
 
+template <std::integral T, size_t size>
+
+struct ShiftQueue {
+
+  auto get_last() -> T { return buffer[size - 1]; }
+
+  auto set_first(T value) -> void { buffer[0] = value; }
+
+  auto logical_or_first(T value) -> void { buffer[0] |= value; }
+
+  auto shift() -> void {
+    std::rotate(buffer.rbegin(), buffer.rbegin() + 1, buffer.rend());
+  }
+
+  auto shift_in(T value) -> void {
+    std::rotate(buffer.rbegin(), buffer.rbegin() + 1, buffer.rend());
+    buffer[0] = value;
+  }
+
+private:
+  std::array<T, size> buffer{0};
+};
+
+template <std::integral T, size_t size, size_t inner_size>
+struct ArrayShiftQueue {
+  auto get_last() -> std::array<T, inner_size> { return buffer[size - 1]; }
+
+  auto fill_index(unsigned char value, size_t index) -> void {
+    std::fill(std::begin(buffer[index]), std::end(buffer[index]), value);
+  }
+
+  auto copy_to_index(unsigned char *src, size_t index) -> void {
+    std::memcpy(buffer[index].data(), src, inner_size);
+  }
+
+  auto copy_from_index(unsigned char *dest, size_t index) -> void {
+    std::memcpy(dest, buffer[index].data(), inner_size);
+  }
+
+  auto shift() -> void {
+    std::rotate(buffer.rbegin(), buffer.rbegin() + 1, buffer.rend());
+  }
+
+private:
+  std::array<std::array<T, inner_size>, size> buffer{0};
+};
+
 // --- Private globals ---
+
+namespace {
 
 constexpr auto UART_DATA_REGISTER = 0xFF000000u;
 constexpr auto UART_STATUS_REGISTER = 0xFF000004u;
@@ -45,7 +100,46 @@ constexpr auto SUCCESS_ADDRESS = 0x0000007Cu;
 constexpr auto START_TRACE_ADDRESS = MAIN_ADDRESS;
 constexpr auto STALL_CYCLES_THRESHOLD = 10'000;
 
+constexpr auto MEMORY_LATENCY = 1; // TODO: This should be a build argument
+constexpr auto MEMORY_WIDTH = 32;  // TODO: This should be a build argument
+
 auto inst_trace_file = std::ofstream{};
+
+int end_cnt = 0;   // count number of cycles after address 0 was requested
+int abort_cnt = 0; // count number of cycles since mem_req_o last toggled
+
+bool main_reached = true; // detect if main has been reached to begin
+                          // collecting statistics
+bool exiting = false;
+
+// Variables for stall detection
+int current_IF_PC = 0;
+int last_IF_PC = 0;
+int cycles_stalled = 0;
+
+// Variables for processor metrics
+uint64_t cycles = 0;  // Cycle count
+int instructions = 0; // Instruction Count
+
+int cycles_stalled_XIF = 0; // Cycles stalled due to waiting for a result
+                            // from the XIF interface
+int cycles_stalled_XIF_loadstore =
+    0; // Cycles stalled due to a load/store on the XIF interface
+
+int instr_offloaded_count = 0;
+int vector_loads = 0;
+int vector_stores = 0;
+int other_vector_ops = 0;
+
+// avg vector length calcs
+int sum_vec_lengths = 0;
+int sum_vec_lengths_bytes = 0;
+float sum_vec_percentage = 0.0;
+int num_vec_instr = 0;
+
+int cycles_begin_trace = 0; // Trace begins at this cycle count.  TODO:
+                            // expose to the command line
+} // namespace
 
 // --- Private function declarations ---
 
@@ -55,7 +149,41 @@ auto rising_edge(Vvproc_top *top) -> void;
 
 auto falling_edge(Vvproc_top *top) -> void;
 
+/** @brief Print instruction trace information (IF stage)
+ *
+ * @param pc The current program counter
+ * @param instruction The current instruction
+ */
 auto print_trace(unsigned pc, unsigned instruction) -> void;
+
+/** @brief Check if IF PC indicates a failed program
+ *
+ * @param pc_if The IF PC
+ *
+ * @returns true for failure, false otherwise
+ */
+auto check_for_fail(int pc_if) -> bool;
+
+// auto read_write_mem(Vvproc_top *top, int mem_w, unsigned char *mem,
+//                     unsigned char **mem_rdata_queue, unsigned addr) -> void;
+
+auto read_write_mem(Vvproc_top *top, unsigned char *mem,
+                    ArrayShiftQueue<unsigned char, MEMORY_LATENCY,
+                                    (MEMORY_WIDTH >> 3)> &mem_rdata_queue,
+                    unsigned addr) -> void;
+
+// auto test_memory_mapped(Vvproc_top *top, int mem_w,
+//                         unsigned char **mem_rdata_queue, unsigned addr) ->
+//                         bool;
+
+auto test_memory_mapped(Vvproc_top *top,
+                        ArrayShiftQueue<unsigned char, MEMORY_LATENCY,
+                                        (MEMORY_WIDTH >> 3)> &mem_rdata_queue,
+                        unsigned addr) -> bool;
+
+auto print_metrics() -> void;
+
+auto check_for_stall() -> bool;
 
 // --- Main ---
 
@@ -143,20 +271,13 @@ int main(int argc, char **argv) {
     return 3;
   }
 
-  int32_t *mem_rvalid_queue = (int32_t *)malloc(sizeof(int32_t) * mem_latency);
-  unsigned char **mem_rdata_queue = (unsigned char **)malloc(
-      sizeof(unsigned char *) * mem_latency); // memory data port
-  int32_t *mem_err_queue = (int32_t *)malloc(sizeof(int32_t) * mem_latency);
-
-  for (int queue_pos = 0; queue_pos < mem_latency; queue_pos++) {
-    mem_rdata_queue[queue_pos] =
-        (unsigned char *)malloc(sizeof(unsigned char) * mem_w / 8);
-  }
-
-  int32_t *mem_ivalid_queue = (int32_t *)malloc(sizeof(int32_t) * mem_latency);
-  int32_t *mem_idata_queue = (int32_t *)malloc(
-      sizeof(int32_t) * mem_latency); // memory instruction port
-  int32_t *mem_ierr_queue = (int32_t *)malloc(sizeof(int32_t) * mem_latency);
+  auto mem_rvalid_queue = ShiftQueue<int32_t, MEMORY_LATENCY>();
+  auto mem_rdata_queue =
+      ArrayShiftQueue<unsigned char, MEMORY_LATENCY, (MEMORY_WIDTH >> 3)>();
+  auto mem_err_queue = ShiftQueue<int32_t, MEMORY_LATENCY>();
+  auto mem_ivalid_queue = ShiftQueue<int32_t, MEMORY_LATENCY>();
+  auto mem_idata_queue = ShiftQueue<int32_t, MEMORY_LATENCY>();
+  auto mem_ierr_queue = ShiftQueue<int32_t, MEMORY_LATENCY>();
 
   Vvproc_top *top = new Vvproc_top;
   VerilatedTrace_t *tfp = NULL;
@@ -240,9 +361,6 @@ int main(int argc, char **argv) {
     // simulate program execution
     {
       int i;
-      for (i = 0; i < mem_latency; i++) {
-        mem_rvalid_queue[i] = 0;
-      }
       top->mem_rvalid_i = 0;
       top->clk_i = 0;
       top->rst_ni = 0;
@@ -255,41 +373,6 @@ int main(int argc, char **argv) {
       }
       top->rst_ni = 1;
       top->eval();
-
-      int end_cnt = 0,   // count number of cycles after address 0 was requested
-          abort_cnt = 0; // count number of cycles since mem_req_o last toggled
-
-      bool main_reached = true; // detect if main has been reached to begin
-                                // collecting statistics
-      bool exiting = false;
-
-      // Variables for stall detection
-      int current_IF_PC = 0;
-      int last_IF_PC = 0;
-      int cycles_stalled = 0;
-
-      // Variables for processor metrics
-      int cycles = 0;       // Cycle count
-      int instructions = 0; // Instruction Count
-
-      int cycles_stalled_XIF = 0; // Cycles stalled due to waiting for a result
-                                  // from the XIF interface
-      int cycles_stalled_XIF_loadstore =
-          0; // Cycles stalled due to a load/store on the XIF interface
-
-      int instr_offloaded_count = 0;
-      int vector_loads = 0;
-      int vector_stores = 0;
-      int other_vector_ops = 0;
-
-      // avg vector length calcs
-      int sum_vec_lengths = 0;
-      int sum_vec_lengths_bytes = 0;
-      float sum_vec_percentage = 0.0;
-      int num_vec_instr = 0;
-
-      int cycles_begin_trace = 0; // Trace begins at this cycle count.  TODO:
-                                  // expose to the command line
 
       while (end_cnt < extra_cycles) {
         // if ABORT_CYCLES is defined, then it specifies the number of cycles
@@ -318,54 +401,17 @@ int main(int argc, char **argv) {
                              // now byte addressible (only works when scalar
                              // core set to work with non-aligned reads)
 
-        for (int byte = 0; byte < mem_w / 8; byte++) {
-          mem_rdata_queue[0][byte] = 0;
-        }
-
         if (valid) {
-          // write/read memory content if the address is in the valid range
-          if (top->mem_req_o && top->mem_we_o) {
-            // TODO: 2 loops with index i?
-            for (i = 0; i < mem_w / 8; i++) {
-              for (i = 0; i < mem_w / 8; i++) {
-                unsigned char *w_port = (unsigned char *)&(top->mem_wdata_o);
-                unsigned char *be_port = (unsigned char *)&(top->mem_be_o);
-                if ((be_port[i / 8] & (1 << (i % 8)))) {
-
-                  mem[addr + i] = w_port[i];
-                }
-              }
-            }
-          }
-          for (i = 0; i < mem_w / 8; i++) {
-            mem_rdata_queue[0][i] |= mem[addr + i];
-          }
+          // Write/read memory content if the address is in the valid range
+          read_write_mem(top, mem, mem_rdata_queue, addr);
         } else if (top->mem_req_o) {
-          // test for memory-mapped registers in case of a request for an
-          // invalid addr
-          switch (addr) {
-          case UART_DATA_REGISTER: // UART data register
-            valid = true;
-            for (int byte = 0; byte < mem_w / 8; byte++) {
-              mem_rdata_queue[0][byte] =
-                  0xf; // always reads as -1, i.e. no data received
-            }
-            if (top->mem_we_o) {
-              uint32_t *w_port = (uint32_t *)&(top->mem_wdata_o);
-              putc(*w_port & 0xFF, stdout); // TODO: Verify this still works
-            }
-            break;
-          case UART_STATUS_REGISTER: // UART status register
-            valid = true;
-            for (int byte = 0; byte < mem_w / 8; byte++) {
-              mem_rdata_queue[0][byte] = 0; // always ready to transmit
-            }
-            break;
-          }
+          // Test for memory-mapped registers in case of a request for an
+          // invalid address
+          valid = test_memory_mapped(top, mem_rdata_queue, addr);
         }
 
-        mem_rvalid_queue[0] = top->mem_req_o;
-        mem_err_queue[0] = !valid;
+        mem_rvalid_queue.set_first(top->mem_req_o);
+        mem_err_queue.set_first(!valid);
 
         int mem_req_o_tmp =
             top->mem_req_o; // used to determine when to abort on stall TODO:
@@ -379,53 +425,40 @@ int main(int argc, char **argv) {
                               // now byte addressible (only works when scalar
                               // core set to work with non-aligned reads)
 
-        mem_idata_queue[0] = 0;
-
         if (valid_instr) {
-          for (i = 0; i < 32 / 8; i++) { // port always 32 bits wide
-            mem_idata_queue[0] |= (mem[addr_instr + i] << (8 * i));
-          }
+          int32_t idata_value = 0;
+          std::memcpy(&idata_value, mem + addr_instr, sizeof(int32_t));
+          mem_idata_queue.set_first(idata_value);
         }
 
-        mem_ivalid_queue[0] = top->mem_ireq_o;
-        mem_ierr_queue[0] = !valid_instr;
+        mem_ivalid_queue.set_first(top->mem_ireq_o);
+        mem_ierr_queue.set_first(!valid_instr);
 
         rising_edge(top);
 
-        // fulfill memory request on main port
-        top->mem_rvalid_i = mem_rvalid_queue[mem_latency - 1];
+        // Fulfill memory request on main port
+        top->mem_rvalid_i = mem_rvalid_queue.get_last();
 
-        for (int byte = 0; byte < mem_w / 8; byte++) {
-          unsigned char *mem_port = (unsigned char *)&(top->mem_rdata_i);
-          mem_port[byte] = mem_rdata_queue[mem_latency - 1][byte];
-          // top->mem_rdata_i = mem_rdata_queue[mem_latency-1][byte];
-        }
-        top->mem_err_i = mem_err_queue[mem_latency - 1];
+        unsigned char *mem_port = (unsigned char *)&(top->mem_rdata_i);
+        mem_rdata_queue.copy_from_index(mem_port, MEMORY_LATENCY - 1);
+        top->mem_err_i = mem_err_queue.get_last();
 
-        // fullfill memory request on instruction port
-        top->mem_irvalid_i = mem_ivalid_queue[mem_latency - 1];
-        top->mem_irdata_i = mem_idata_queue[mem_latency - 1];
-        top->mem_ierr_i = mem_ierr_queue[mem_latency - 1];
-
+        // Fullfill memory request on instruction port
+        top->mem_irvalid_i = mem_ivalid_queue.get_last();
+        top->mem_irdata_i = mem_idata_queue.get_last();
+        top->mem_ierr_i = mem_ierr_queue.get_last();
         top->eval();
 
-        // updating queue for main read port
-        for (i = mem_latency - 1; i > 0; i--) {
-          mem_rvalid_queue[i] = mem_rvalid_queue[i - 1];
-          for (int byte = 0; byte < mem_w / 8; byte++) {
-            mem_rdata_queue[i][byte] = mem_rdata_queue[i - 1][byte];
-          }
-          mem_err_queue[i] = mem_err_queue[i - 1];
-        }
-        // updating queue for instruction read port
-        for (i = mem_latency - 1; i > 0; i--) {
-          mem_ivalid_queue[i] = mem_ivalid_queue[i - 1];
-          mem_idata_queue[i] = mem_idata_queue[i - 1];
-          mem_ierr_queue[i] = mem_ierr_queue[i - 1];
-        }
+        // Updating queue for main read port
+        mem_rdata_queue.shift();
+        mem_rvalid_queue.shift();
+        mem_err_queue.shift();
 
+        // Updating queue for instruction read port
+        mem_ivalid_queue.shift();
+        mem_idata_queue.shift();
+        mem_ierr_queue.shift();
         falling_edge(top);
-        printf("%x, ", current_IF_PC);
         main_reached = (current_IF_PC == START_TRACE_ADDRESS) |
                        main_reached; // Vicuna Linker always puts MAIN (or
                                      // run_test) at addr 2000.  Wait to check
@@ -433,28 +466,17 @@ int main(int argc, char **argv) {
 
         // Need to use PC to exit/abort due to I cache
         current_IF_PC = top->vproc_top->core->pc_if;
-        printf("%x, %08x\n", current_IF_PC,
-               top->vproc_top->core->instruction_if);
+
         //////////
         // Check Exit Conditions
         //////////
 
-        // A jump to address 0x78 is a failed test caused by mismatched output
-        if (current_IF_PC == FAIL_MISMATCH_ADDRESS) {
-
-          fprintf(stderr, "ERROR: TEST FAILURE - Output Mismatch\n");
-          exit_code = 1;
-          break;
-        }
-        // A jump to address 0x74 is a failed test caused by an interrupt being
-        // called (all other interrupts also funnel here)
-        if (current_IF_PC == FAIL_INTERRUPT_ADDRESS) {
-
-          fprintf(stderr, "ERROR: TEST FAILURE - Interrupt Called\n");
+        if (check_for_fail(current_IF_PC)) {
           exit_code = 1;
           break;
         }
 
+        // Check for success
         if (end_cnt > 0 || ((top->mem_req_o == 1 || top->mem_ireq_o == 1) &&
                             current_IF_PC == SUCCESS_ADDRESS)) {
           end_cnt++;
@@ -462,18 +484,8 @@ int main(int argc, char **argv) {
           exiting = true;
         }
 
-        // After 10000 cycles at the same fetch PC, exit
-        if (current_IF_PC == last_IF_PC) {
-          cycles_stalled++;
-        } else {
-          cycles_stalled = 0;
-        }
-
-        if (cycles_stalled >=
-            STALL_CYCLES_THRESHOLD) { // TODO: Expose this to the command line
-          fprintf(stderr,
-                  "ERROR: SIMULATION STALLED FOR %i CYCLES AT IF_PC = 0x%x\n",
-                  STALL_CYCLES_THRESHOLD, current_IF_PC);
+        // After STALL_CYCLES_THRESHOLD cycles at the same fetch PC, exit
+        if (check_for_stall()) {
           exit_code = 1;
           break;
         }
@@ -496,7 +508,7 @@ int main(int argc, char **argv) {
 
           if (!exiting) {
             cycles++;
-            if (inst_trace_out) {
+            if (inst_trace_out and current_IF_PC != last_IF_PC) {
               print_trace(last_IF_PC, top->vproc_top->core->instruction_if);
             }
             if (current_IF_PC != last_IF_PC) {
@@ -581,22 +593,7 @@ int main(int argc, char **argv) {
         }
       }
 
-      fprintf(stderr, "Total Cycles: %d\n", cycles);
-      fprintf(stderr, "Instruction Count: %d CPI : %f \n\n", instructions,
-              ((float)(cycles)) / ((float)instructions));
-
-      fprintf(stderr, "Number of Vector Instructions Executed: %d  \n",
-              num_vec_instr);
-      fprintf(stderr, "AVG VL Elements: %f  \n",
-              ((float)(sum_vec_lengths)) / ((float)num_vec_instr));
-      fprintf(stderr, "AVG VL Bytes: %f  \n\n",
-              ((float)(sum_vec_lengths_bytes)) / ((float)num_vec_instr));
-      fprintf(stderr, "AVG VREG Usage %: %f  \n\n",
-              ((float)(sum_vec_percentage)) / ((float)num_vec_instr) * 100);
-
-      fprintf(stderr, "Vector Loads     : %d\n", vector_loads);
-      fprintf(stderr, "Vector Stores    : %d\n", vector_stores);
-      fprintf(stderr, "Other Vector Ops : %d\n", other_vector_ops);
+      print_metrics();
     }
 
     // write dump file
@@ -626,13 +623,6 @@ int main(int argc, char **argv) {
   free(dump_path);
   free(line);
   free(mem);
-  free(mem_rvalid_queue);
-  for (int queue_pos = 0; queue_pos < mem_latency; queue_pos++) {
-    free(mem_rdata_queue[queue_pos]);
-  }
-  free(mem_rdata_queue);
-  free(mem_idata_queue);
-  free(mem_err_queue);
   if (csv_out == 1) {
     fclose(fcsv);
   }
@@ -664,10 +654,115 @@ auto print_trace(unsigned pc, unsigned instruction) -> void {
 
   // auto pc_if = top->vproc_top->core->pc_if;
   // auto instr_if = top->vproc_top->core->instruction_if;
+  static uint64_t last_cycle = 0;
 
-  inst_trace_file << std::hex << std::setw(8) << std::setfill('0') << pc
-                  << ": " << std::setw(8) << std::setfill('0') << instruction
+  inst_trace_file << std::hex << std::setw(8) << std::setfill('0') << pc << ", "
+                  << std::setw(8) << std::setfill('0') << instruction << ", "
+                  << std::dec << cycles << ", delta: " << cycles - last_cycle
                   << "\n";
+
+  last_cycle = cycles;
+}
+
+auto check_for_fail(int if_pc) -> bool {
+
+  // A jump to address 0x78 is a failed test caused by mismatched output
+  if (if_pc == FAIL_MISMATCH_ADDRESS) {
+    fprintf(stderr, "ERROR: TEST FAILURE - Output Mismatch\n");
+    return true;
+  }
+
+  // A jump to address 0x74 is a failed test caused by an interrupt being
+  // called (all other interrupts also funnel here)
+  if (if_pc == FAIL_INTERRUPT_ADDRESS) {
+    fprintf(stderr, "ERROR: TEST FAILURE - Interrupt Called\n");
+    return true;
+  }
+
+  return false;
+}
+
+auto read_write_mem(Vvproc_top *top, unsigned char *mem,
+                    ArrayShiftQueue<unsigned char, MEMORY_LATENCY,
+                                    (MEMORY_WIDTH >> 3)> &mem_rdata_queue,
+                    unsigned addr) -> void {
+  if (top->mem_req_o && top->mem_we_o) {
+    for (int i = 0; i < (MEMORY_WIDTH >> 3); i++) {
+      unsigned char *w_port = (unsigned char *)&(top->mem_wdata_o);
+      unsigned char *be_port = (unsigned char *)&(top->mem_be_o);
+      if ((be_port[i / 8] & (1 << (i % 8)))) {
+        mem[addr + i] = w_port[i];
+      }
+    }
+  }
+
+  mem_rdata_queue.copy_to_index(mem + addr, 0);
+}
+
+auto test_memory_mapped(Vvproc_top *top,
+                        ArrayShiftQueue<unsigned char, MEMORY_LATENCY,
+                                        (MEMORY_WIDTH >> 3)> &mem_rdata_queue,
+                        unsigned addr) -> bool {
+
+  auto valid = false;
+  switch (addr) {
+  case UART_DATA_REGISTER:
+    valid = true;
+    static constexpr auto NO_RECV = 0xf;
+    mem_rdata_queue.fill_index(NO_RECV, 0);
+    if (top->mem_we_o) {
+      uint32_t *w_port = (uint32_t *)&(top->mem_wdata_o);
+      putc(*w_port & 0xFF, stdout); // TODO: Verify this still works
+    }
+    break;
+
+  case UART_STATUS_REGISTER:
+    valid = true;
+    static constexpr auto TX_READY = 0;
+    mem_rdata_queue.fill_index(TX_READY, 0);
+    break;
+
+  default:
+    break;
+  }
+
+  return valid;
+}
+
+auto print_metrics() -> void {
+  fprintf(stderr, "Total Cycles: %lu\n", cycles);
+  fprintf(stderr, "Instruction Count: %d CPI : %f \n\n", instructions,
+          ((float)(cycles)) / ((float)instructions));
+
+  fprintf(stderr, "Number of Vector Instructions Executed: %d  \n",
+          num_vec_instr);
+  fprintf(stderr, "AVG VL Elements: %f  \n",
+          ((float)(sum_vec_lengths)) / ((float)num_vec_instr));
+  fprintf(stderr, "AVG VL Bytes: %f  \n\n",
+          ((float)(sum_vec_lengths_bytes)) / ((float)num_vec_instr));
+  fprintf(stderr, "AVG VREG Usage %%: %f  \n\n",
+          ((float)(sum_vec_percentage)) / ((float)num_vec_instr) * 100);
+
+  fprintf(stderr, "Vector Loads     : %d\n", vector_loads);
+  fprintf(stderr, "Vector Stores    : %d\n", vector_stores);
+  fprintf(stderr, "Other Vector Ops : %d\n", other_vector_ops);
+}
+
+auto check_for_stall() -> bool {
+  if (current_IF_PC == last_IF_PC) {
+    cycles_stalled++;
+  } else {
+    cycles_stalled = 0;
+  }
+
+  if (cycles_stalled >=
+      STALL_CYCLES_THRESHOLD) { // TODO: Expose this to the command line
+    fprintf(stderr, "ERROR: SIMULATION STALLED FOR %i CYCLES AT IF_PC = 0x%x\n",
+            STALL_CYCLES_THRESHOLD, current_IF_PC);
+    return true;
+  }
+
+  return false;
 }
 
 double sc_time_stamp() { return main_time; }

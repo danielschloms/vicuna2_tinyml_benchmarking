@@ -6,9 +6,9 @@ GREEN='\033[0;32m'
 NC='\033[0m' # No Color
 
 # Defaults and setup
-ARCH="rv32imf_zve32f"
+ARCH="rv32im_zve32x"
 VLEN=1024
-VLANE_W=512
+VLANE_W=32
 
 # Paths
 PRJ_DIR=$WS_PATH/vicuna2_tinyml_benchmarking
