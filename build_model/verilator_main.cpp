@@ -38,9 +38,7 @@ typedef int VerilatedTrace_t;
 #endif
 #endif
 
-template <std::integral T, size_t size>
-
-struct ShiftQueue {
+template <std::integral T, size_t size> struct ShiftQueue {
 
   auto get_last() -> T { return buffer[size - 1]; }
 
@@ -184,6 +182,12 @@ auto test_memory_mapped(Vvproc_top *top,
 auto print_metrics() -> void;
 
 auto check_for_stall() -> bool;
+
+auto check_sew(Vvproc_top *top) -> int;
+
+auto check_lmul(int cur_vec_len_bytes, Vvproc_top *top) -> void;
+
+auto check_vector_result(Vvproc_top *top) -> void;
 
 // --- Main ---
 
@@ -390,11 +394,11 @@ int main(int argc, char **argv) {
         }
 
 #endif
-        // update last IF_PC
+        // Update last IF_PC
         last_IF_PC = current_IF_PC;
 
-        // fulfill request on the normal memory port
-        // read memory request
+        // Fulfill request on the normal memory port
+        // Read memory request
         bool valid = top->mem_addr_o < mem_sz;
         unsigned addr =
             top->mem_addr_o; // remove clearing of bottom address bits.  memory
@@ -418,27 +422,23 @@ int main(int argc, char **argv) {
                             // move to location to be clearer + rename
 
         // Fulfill request on the instruction memory port
-
         bool valid_instr = top->mem_iaddr_o < mem_sz;
-        unsigned addr_instr =
-            top->mem_iaddr_o; // remove clearing of bottom address bits.  memory
-                              // now byte addressible (only works when scalar
-                              // core set to work with non-aligned reads)
+        // Remove clearing of bottom address bits. Memory
+        // now byte addressible (only works when scalar
+        // core set to work with non-aligned reads)
+        unsigned addr_instr = top->mem_iaddr_o;
 
         if (valid_instr) {
           int32_t idata_value = 0;
           std::memcpy(&idata_value, mem + addr_instr, sizeof(int32_t));
           mem_idata_queue.set_first(idata_value);
         }
-
         mem_ivalid_queue.set_first(top->mem_ireq_o);
         mem_ierr_queue.set_first(!valid_instr);
-
         rising_edge(top);
 
         // Fulfill memory request on main port
         top->mem_rvalid_i = mem_rvalid_queue.get_last();
-
         unsigned char *mem_port = (unsigned char *)&(top->mem_rdata_i);
         mem_rdata_queue.copy_from_index(mem_port, MEMORY_LATENCY - 1);
         top->mem_err_i = mem_err_queue.get_last();
@@ -459,10 +459,11 @@ int main(int argc, char **argv) {
         mem_idata_queue.shift();
         mem_ierr_queue.shift();
         falling_edge(top);
-        main_reached = (current_IF_PC == START_TRACE_ADDRESS) |
-                       main_reached; // Vicuna Linker always puts MAIN (or
-                                     // run_test) at addr 2000.  Wait to check
-                                     // for a stall/abort until this has passed.
+
+        // Vicuna Linker always puts MAIN (or
+        // run_test) at addr 2000.  Wait to check
+        // for a stall/abort until this has passed.
+        main_reached = (current_IF_PC == START_TRACE_ADDRESS) | main_reached;
 
         // Need to use PC to exit/abort due to I cache
         current_IF_PC = top->vproc_top->core->pc_if;
@@ -521,75 +522,7 @@ int main(int argc, char **argv) {
         // By checking here instead of issue, current VL is correct for vsetvli
         if (top->vproc_top->vcore_result_valid &&
             top->vproc_top->vcore_result_ready && main_reached) {
-          num_vec_instr++;
-          sum_vec_lengths +=
-              top->vproc_top
-                  ->csr_vl_o; // running sum of number of elements in vectors
-          int cur_vec_len_bytes = 0;
-          switch ((top->vproc_top->csr_vtype_o >> 3) &
-                  7) // sew stored in bits [5:3]
-          {
-          case 0: // sew == 8
-            sum_vec_lengths_bytes +=
-                top->vproc_top->csr_vl_o; // each element is one byte
-            cur_vec_len_bytes = top->vproc_top->csr_vl_o;
-            break;
-          case 1: // sew == 16
-            sum_vec_lengths_bytes +=
-                top->vproc_top->csr_vl_o * 2; // each element two bytes
-            cur_vec_len_bytes = top->vproc_top->csr_vl_o * 2;
-            break;
-          case 2: // sew == 32
-            sum_vec_lengths_bytes +=
-                top->vproc_top->csr_vl_o * 4; // each element four bytes
-            cur_vec_len_bytes = top->vproc_top->csr_vl_o * 4;
-            break;
-          default:
-            fprintf(stderr, "UNSUPPORTED SEW DETECTED\n");
-          }
-
-          switch (top->vproc_top->csr_vtype_o & 7) // LMUL stored in bits [2:0]
-          {
-          case 0: // LMUL = 1
-            sum_vec_lengths_bytes +=
-                ((float)cur_vec_len_bytes) /
-                ((float)
-                     top->vproc_top->csr_vlen_b_o); // each element is one byte
-
-          case 1: // LMUL == 2
-            sum_vec_percentage += ((float)cur_vec_len_bytes) /
-                                  ((float)top->vproc_top->csr_vlen_b_o *
-                                   2); // 2 vector regs in group
-            break;
-          case 2: // LMUL == 4
-            sum_vec_lengths_bytes += ((float)cur_vec_len_bytes) /
-                                     ((float)top->vproc_top->csr_vlen_b_o *
-                                      4); // 4 vector regs in group
-            break;
-          case 4: // LMUL == 8
-            sum_vec_lengths_bytes += ((float)cur_vec_len_bytes) /
-                                     ((float)top->vproc_top->csr_vlen_b_o *
-                                      8); // 4 vector regs in group
-            break;
-          case 7: // LMUL = 1/2
-            sum_vec_lengths_bytes += ((float)cur_vec_len_bytes) /
-                                     ((float)top->vproc_top->csr_vlen_b_o /
-                                      2.0); // each element is one byte
-          case 6:                           // LMUL = 1/4
-            sum_vec_lengths_bytes += ((float)cur_vec_len_bytes) /
-                                     ((float)top->vproc_top->csr_vlen_b_o /
-                                      4.0); // each element is one byte
-          case 5:                           // LMUL = 1/8
-            sum_vec_lengths_bytes += ((float)cur_vec_len_bytes) /
-                                     ((float)top->vproc_top->csr_vlen_b_o /
-                                      8.0); // each element is one byte
-          default:
-            sum_vec_lengths_bytes +=
-                ((float)cur_vec_len_bytes) /
-                ((float)
-                     top->vproc_top->csr_vlen_b_o); // each element is one byte
-            break;
-          }
+          check_vector_result(top);
         }
       }
 
@@ -763,6 +696,58 @@ auto check_for_stall() -> bool {
   }
 
   return false;
+}
+
+auto check_sew(Vvproc_top *top) -> int {
+  // Sew stored in VTYPE bits [5:3]
+  static constexpr auto sew_bit_offset = 3;
+  static constexpr auto sew_bitmask = 0b111000;
+  static constexpr auto min_sew = 8;
+  int cur_vec_len_bytes = 0;
+  auto sew_bits = (top->vproc_top->csr_vtype_o & sew_bitmask) >> sew_bit_offset;
+
+  if (sew_bits >= 0 and sew_bits <= 2) {
+    sum_vec_lengths_bytes += (top->vproc_top->csr_vl_o << sew_bits);
+    cur_vec_len_bytes = top->vproc_top->csr_vl_o << sew_bits;
+  } else {
+    fprintf(stderr, "UNSUPPORTED SEW DETECTED\n");
+  }
+
+  return cur_vec_len_bytes;
+}
+
+auto check_lmul(int cur_vec_len_bytes, Vvproc_top *top) -> void {
+  static constexpr auto lmul_bitmask = 0b111;
+  auto lmul = top->vproc_top->csr_vtype_o & lmul_bitmask;
+  auto fractional_bit = lmul >> 2;
+  auto value_bits = lmul & 0b11;
+
+  if (fractional_bit) {
+    // Fractional LMUL:
+    // value_bits = 1 ... shift right by 3
+    // value_bits = 2 ... shift right by 2
+    // value_bits = 3 ... shift right by 1
+    auto shift_amount = 3 - (value_bits - 1);
+    sum_vec_lengths_bytes +=
+        (float)cur_vec_len_bytes /
+        (float)(top->vproc_top->csr_vlen_b_o >> shift_amount);
+  } else {
+    // Multiplicative LMUL
+    // value_bits = x ... shift left by x
+    auto shift_amount = value_bits;
+    sum_vec_lengths_bytes +=
+        (float)cur_vec_len_bytes /
+        (float)(top->vproc_top->csr_vlen_b_o << shift_amount);
+  }
+}
+
+auto check_vector_result(Vvproc_top *top) -> void {
+  num_vec_instr++;
+  // Running sum of number of elements in vectors
+  sum_vec_lengths += top->vproc_top->csr_vl_o;
+
+  auto cur_vec_len_bytes = check_sew(top);
+  check_lmul(cur_vec_len_bytes, top);
 }
 
 double sc_time_stamp() { return main_time; }

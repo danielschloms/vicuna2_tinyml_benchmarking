@@ -21,10 +21,11 @@ find_package(verilator HINTS "$ENV{WS_PATH}/toolchain")
 
 # See whats going in CMake while getting the build process up and running
 set(CMAKE_VERBOSE_MAKEFILE ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Using C and C++ 11
-set(CMAKE_C_STANDARD 14)
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_C_STANDARD 20)
+set(CMAKE_CXX_STANDARD 20)
 
 
 #Currently Supported: rv32im, rv32im_zve32x, rv32imf, rv32imf_zhf, rv32imf_zve32x, rv32imf_zve32f
@@ -226,5 +227,7 @@ verilate(verilated_model SOURCES  ${CV32E40X_SOURCE} ${VICUNA_SRCS} ${FPU_SS_SOU
                               ${RISCV_ZVE32X}
                               ${RISCV_ZVE32F}
                               ${RISCV_ZVFH}
-                              -CFLAGS "-std=gnu++14 -O2")
+                              -CFLAGS "-std=gnu++20 -O2")
+
+target_include_directories(verilated_model PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/build/CMakeFiles/verilated_model.dir/Vvproc_top.dir)
                               
