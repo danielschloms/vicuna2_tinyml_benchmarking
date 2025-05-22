@@ -3,14 +3,19 @@
 # Terminal color
 MAGENTA='\033[0;35m'
 GREEN='\033[0;32m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Defaults and setup
-SW_ARCH="rv32im_zve32x"
-ARCH="rv32im_zve32x"
+SW_ARCH="rv32imf_zve32f"
+ARCH="rv32imf_zve32f"
 VLEN=1024
-VLANE_W=512
-# MODEL_FLAGS="-DVLANE_W=$VLANE_W"
+VLANE_W=32
+VMEM_W=32
+TRACE="off"
+TRACE_FULL="off"
+
+MODEL_FLAGS="-DVREG_W=$VLEN -DVLANE_W=$VLANE_W -DVMEM_W=$VMEM_W -DTRACE=$TRACE -DTRACE_FULL=$TRACE_FULL"
 
 # Paths
 PRJ_DIR=$WS_PATH/vicuna2_tinyml_benchmarking
@@ -26,16 +31,18 @@ mkdir -p $SRC_BUILD_DIR
 # Build Verilator model
 cd $MODEL_BUILD_DIR
 
-MODEL_FLAGS="-DVREG_W=$VLEN"
-
 cmake .. -DRISCV_ARCH=$ARCH $MODEL_FLAGS
 make -j$(nproc)
 echo -e "${MAGENTA}Model done${NC}"
+echo -e "$BLUE Model Flags:$NC $MODEL_FLAGS"
 
 # Build programs
 cd $SRC_BUILD_DIR
 
-SOURCE_FLAGS="-DMIN_VLEN=$VLEN"
+MEM_W=32
+SW_TRACE="off"
+
+SOURCE_FLAGS="-DMIN_VLEN=$VLEN -DMEM_W=$MEM_W -DTRACE=$SW_TRACE"
 
 if [ "$#" -eq 1 ] && [ $1 = "debug" ]; then
     cmake .. -DRISCV_ARCH=$SW_ARCH $SOURCE_FLAGS -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-g -Og" -DCMAKE_EXPORT_COMPILE_COMMANDS=On

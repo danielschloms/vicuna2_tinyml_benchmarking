@@ -20,14 +20,17 @@ elif [ "$#" -gt 1 ]; then
     exit 1
 fi
 
+echo "Running $TARGET_SW"
+
 # Check if target software exists
 
 # Verilator executable & args
 PRJ_DIR="$WS_PATH/vicuna2_tinyml_benchmarking"
 MODEL_BUILD_DIR="$PRJ_DIR/build_model/build"
-SW_BUILD_DIR="$PRJ_DIR/build_custom/build/custom_sources"
+# SW_BUILD_DIR="$PRJ_DIR/build_custom/build/custom_sources"
+SW_BUILD_DIR="$PRJ_DIR/build_from_other/vector"
 PROG_FILE="$SW_BUILD_DIR/prog_$TARGET_SW.txt"
-INSTR_TRACE_FILE="$WS_PATH/traces/verilator/trace.txt"
+INSTR_TRACE_FILE="$WS_PATH/vicuna2_tinyml_benchmarking/trace_comparison/verilator/trace.txt"
 
 VERILATOR_EXE="$MODEL_BUILD_DIR/verilated_model"
 VERILATOR_ARGS="$PROG_FILE $MEM_W $MEM_SIZE $MEM_LATENCY $EXTRA_CYCLES $INSTR_TRACE_FILE"
