@@ -3,7 +3,6 @@
 import numpy as np
 from difflib import SequenceMatcher
 
-
 def match_length(a: list, b: list, value):
     diff = abs(len(a) - len(b))
     if len(a) > len(b):
