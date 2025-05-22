@@ -16,6 +16,9 @@
 
 #include <fstream>
 #include <iomanip>
+#include <iostream>
+#include <string>
+#include <type_traits>
 
 #include "Vvproc_top_cv32e40x_core__pi1.h"
 #include "Vvproc_top_vproc_top.h"
@@ -37,6 +40,8 @@ typedef VerilatedFstC VerilatedTrace_t;
 typedef int VerilatedTrace_t;
 #endif
 #endif
+
+enum class InstructionPrintStyle { llvm, gcc };
 
 template <std::integral T, size_t size> struct ShiftQueue {
 
@@ -85,8 +90,6 @@ private:
 
 // --- Private globals ---
 
-namespace {
-
 constexpr auto UART_DATA_REGISTER = 0xFF000000u;
 constexpr auto UART_STATUS_REGISTER = 0xFF000004u;
 
@@ -102,77 +105,86 @@ constexpr auto MEMORY_LATENCY = 1; // TODO: This should be a build argument
 constexpr auto MEMORY_WIDTH = 32;  // TODO: This should be a build argument
 
 auto inst_trace_file = std::ofstream{};
+auto instr_print_style = InstructionPrintStyle::gcc;
 
-int end_cnt = 0;   // count number of cycles after address 0 was requested
-int abort_cnt = 0; // count number of cycles since mem_req_o last toggled
+int end_cnt = 0;   // Number of cycles after address 0 was requested
+int abort_cnt = 0; // Number of cycles since mem_req_o last toggled
 
-bool main_reached = true; // detect if main has been reached to begin
+bool main_reached = true; // Detect if main has been reached to begin
                           // collecting statistics
 bool exiting = false;
 
-// Variables for stall detection
+// - Variables for stall detection -
 int current_IF_PC = 0;
 int last_IF_PC = 0;
+int current_WB_PC = 0;
+int last_WB_PC = 0;
 int cycles_stalled = 0;
 
-// Variables for processor metrics
+// - Variables for timing -
+int instr_to_retire = -1;
+int pc_to_retire = -1;
+
+// - Variables for processor metrics -
 uint64_t cycles = 0;  // Cycle count
 int instructions = 0; // Instruction Count
 
-int cycles_stalled_XIF = 0; // Cycles stalled due to waiting for a result
-                            // from the XIF interface
-int cycles_stalled_XIF_loadstore =
-    0; // Cycles stalled due to a load/store on the XIF interface
+// Cycles stalled due to waiting for a result from the XIF interface
+int cycles_stalled_XIF = 0;
+
+// Cycles stalled due to a load/store on the XIF interface
+int cycles_stalled_XIF_loadstore = 0;
 
 int instr_offloaded_count = 0;
 int vector_loads = 0;
 int vector_stores = 0;
 int other_vector_ops = 0;
 
-// avg vector length calcs
+// Average vector length calculations
 int sum_vec_lengths = 0;
 int sum_vec_lengths_bytes = 0;
 float sum_vec_percentage = 0.0;
 int num_vec_instr = 0;
 
-int cycles_begin_trace = 0; // Trace begins at this cycle count.  TODO:
-                            // expose to the command line
-} // namespace
+// Trace begins at this cycle count.
+// TODO: expose to the command line
+int cycles_begin_trace = 0;
 
 // --- Private function declarations ---
 
 static void log_cycle(Vvproc_top *top, VerilatedTrace_t *tfp, FILE *fcsv);
 
+/**
+ * @brief Set the clock high and evaluate the top level design
+ */
 auto rising_edge(Vvproc_top *top) -> void;
 
+/**
+ * @brief Set the clock low and evaluate the top level design
+ */
 auto falling_edge(Vvproc_top *top) -> void;
 
-/** @brief Print instruction trace information (IF stage)
+/**
+ * @brief Print instruction trace information (IF stage)
  *
  * @param pc The current program counter
  * @param instruction The current instruction
  */
-auto print_trace(unsigned pc, unsigned instruction) -> void;
+auto print_trace(unsigned pc, unsigned instruction, uint64_t cycle) -> void;
 
-/** @brief Check if IF PC indicates a failed program
+/**
+ * @brief Check if IF PC indicates a failed program
  *
  * @param pc_if The IF PC
  *
  * @returns true for failure, false otherwise
  */
-auto check_for_fail(int pc_if) -> bool;
-
-// auto read_write_mem(Vvproc_top *top, int mem_w, unsigned char *mem,
-//                     unsigned char **mem_rdata_queue, unsigned addr) -> void;
+auto check_for_fail(int pc) -> bool;
 
 auto read_write_mem(Vvproc_top *top, unsigned char *mem,
                     ArrayShiftQueue<unsigned char, MEMORY_LATENCY,
                                     (MEMORY_WIDTH >> 3)> &mem_rdata_queue,
                     unsigned addr) -> void;
-
-// auto test_memory_mapped(Vvproc_top *top, int mem_w,
-//                         unsigned char **mem_rdata_queue, unsigned addr) ->
-//                         bool;
 
 auto test_memory_mapped(Vvproc_top *top,
                         ArrayShiftQueue<unsigned char, MEMORY_LATENCY,
@@ -181,6 +193,7 @@ auto test_memory_mapped(Vvproc_top *top,
 
 auto print_metrics() -> void;
 
+// TODO: name not entirely accurate
 auto check_for_stall() -> bool;
 
 auto check_sew(Vvproc_top *top) -> int;
@@ -188,6 +201,12 @@ auto check_sew(Vvproc_top *top) -> int;
 auto check_lmul(int cur_vec_len_bytes, Vvproc_top *top) -> void;
 
 auto check_vector_result(Vvproc_top *top) -> void;
+
+auto write_dump_file(std::string dump_path, unsigned char *mem, int dump_start,
+                     int dump_end) -> void;
+
+auto read_program_file(std::string prog_path, unsigned char *mem,
+                       int mem_sz) -> bool;
 
 // --- Main ---
 
@@ -197,7 +216,7 @@ int main(int argc, char **argv) {
   int exit_code = 0;
 
   // if (argc != 6 && argc != 7 && argc != 8 && argc != 9) {
-  if (argc < 6 or argc > 9) {
+  if (argc < 6 or argc > 10) {
     fprintf(stderr,
             "Usage: %s PROG_PATHS_LIST MEM_W MEM_SZ MEM_LATENCY EXTRA_CYCLES "
             "[INST_TRACE_FILE] [MEM_TRACE_FILE] [WAVEFORM_FILE]\n",
@@ -314,38 +333,7 @@ int main(int argc, char **argv) {
       continue;
     }
 
-    // read program file
-    {
-      FILE *ftmp = fopen(prog_path, "r");
-      if (ftmp == NULL) {
-        fprintf(stderr, "WARNING: skipping `%s': %s\n", prog_path,
-                strerror(errno));
-        continue;
-      }
-      memset(mem, 0, mem_sz);
-      char buf[256];
-      int addr = 0;
-      while (fgets(buf, sizeof(buf), ftmp) != NULL) {
-        if (buf[0] == '#' || buf[0] == '/')
-          continue;
-        char *ptr = buf;
-        if (buf[0] == '@') {
-          addr = strtol(ptr + 1, &ptr, 16) * 4;
-          while (*ptr == ' ')
-            ptr++;
-        }
-        while (*ptr != '\n' && *ptr != 0) {
-          int data = strtol(ptr, &ptr, 16);
-          int i;
-          for (i = 0; i < 4; i++)
-            mem[addr + i] = data >> (8 * i);
-          addr += 4;
-          while (*ptr == ' ')
-            ptr++;
-        }
-      }
-      fclose(ftmp);
-    }
+    read_program_file(std::string(prog_path), mem, mem_sz);
 
     // write reference file
     {
@@ -380,8 +368,8 @@ int main(int argc, char **argv) {
 
       while (end_cnt < extra_cycles) {
         // if ABORT_CYCLES is defined, then it specifies the number of cycles
-        // after which simulation is aborted in case there is no activity on the
-        // memory interface
+        // after which simulation is aborted in case there is no activity on
+        // the memory interface
 #ifdef ABORT_CYCLES
 
         if (abort_cnt >= ABORT_CYCLES) {
@@ -396,12 +384,13 @@ int main(int argc, char **argv) {
 #endif
         // Update last IF_PC
         last_IF_PC = current_IF_PC;
+        last_WB_PC = current_WB_PC;
 
         // Fulfill request on the normal memory port
         // Read memory request
         bool valid = top->mem_addr_o < mem_sz;
         unsigned addr =
-            top->mem_addr_o; // remove clearing of bottom address bits.  memory
+            top->mem_addr_o; // remove clearing of bottom address bits. memory
                              // now byte addressible (only works when scalar
                              // core set to work with non-aligned reads)
 
@@ -417,12 +406,13 @@ int main(int argc, char **argv) {
         mem_rvalid_queue.set_first(top->mem_req_o);
         mem_err_queue.set_first(!valid);
 
-        int mem_req_o_tmp =
-            top->mem_req_o; // used to determine when to abort on stall TODO:
-                            // move to location to be clearer + rename
+        // Used to determine when to abort on stall
+        // TODO: move to location to be clearer + rename
+        int mem_req_o_tmp = top->mem_req_o;
 
         // Fulfill request on the instruction memory port
         bool valid_instr = top->mem_iaddr_o < mem_sz;
+
         // Remove clearing of bottom address bits. Memory
         // now byte addressible (only works when scalar
         // core set to work with non-aligned reads)
@@ -463,23 +453,24 @@ int main(int argc, char **argv) {
         // Vicuna Linker always puts MAIN (or
         // run_test) at addr 2000.  Wait to check
         // for a stall/abort until this has passed.
-        main_reached = (current_IF_PC == START_TRACE_ADDRESS) | main_reached;
+        main_reached = (current_WB_PC == START_TRACE_ADDRESS) | main_reached;
 
         // Need to use PC to exit/abort due to I cache
         current_IF_PC = top->vproc_top->core->pc_if;
+        current_WB_PC = top->vproc_top->core->pc_wb;
 
         //////////
         // Check Exit Conditions
         //////////
 
-        if (check_for_fail(current_IF_PC)) {
+        if (check_for_fail(current_WB_PC)) {
           exit_code = 1;
           break;
         }
 
         // Check for success
         if (end_cnt > 0 || ((top->mem_req_o == 1 || top->mem_ireq_o == 1) &&
-                            current_IF_PC == SUCCESS_ADDRESS)) {
+                            current_WB_PC == SUCCESS_ADDRESS)) {
           end_cnt++;
           fprintf(stderr, "SUCCESS: TEST PASS - Output Match\n");
           exiting = true;
@@ -509,17 +500,47 @@ int main(int argc, char **argv) {
 
           if (!exiting) {
             cycles++;
-            if (inst_trace_out and current_IF_PC != last_IF_PC) {
-              print_trace(last_IF_PC, top->vproc_top->core->instruction_if);
+            if (inst_trace_out and current_WB_PC != last_WB_PC) {
+              auto instr = top->vproc_top->core->instruction_wb;
+              auto pc = top->vproc_top->core->pc_wb;
+              auto opcode = instr & 0b1111111;
+              auto ls_width = (instr >> 12) & 0b111;
+              static constexpr auto load_fp_opcode = 0x7;
+              static constexpr auto store_fp_opcode = 0x27;
+              static constexpr auto vector_opcode = 0x57;
+              static bool vector_instr_waiting = false;
+
+              // If vector instruction is leaving, print with previous cycle
+              if (vector_instr_waiting) {
+                print_trace(pc_to_retire, instr_to_retire, cycles - 1);
+                vector_instr_waiting = false;
+              }
+
+              // Vector loads are differentiated by width, 0 or width > 4 is
+              // vector
+              auto is_vector_ls =
+                  (opcode == load_fp_opcode or opcode == store_fp_opcode) and
+                  (ls_width == 0 or ls_width > 0b100);
+
+              // Don't print/retire vector loads/stores immediately, wait for
+              // next instruction
+              if (is_vector_ls or opcode == vector_opcode) {
+                vector_instr_waiting = true;
+                instr_to_retire = instr;
+                pc_to_retire = pc;
+              } else {
+                print_trace(top->vproc_top->core->pc_wb, instr, cycles);
+              }
             }
-            if (current_IF_PC != last_IF_PC) {
+            if (current_WB_PC != last_WB_PC) {
               instructions++;
             }
           }
         }
 
         // Check if a result from the vector unit is ready and accepted
-        // By checking here instead of issue, current VL is correct for vsetvli
+        // By checking here instead of issue, current VL is correct for
+        // vsetvli
         if (top->vproc_top->vcore_result_valid &&
             top->vproc_top->vcore_result_ready && main_reached) {
           check_vector_result(top);
@@ -529,21 +550,7 @@ int main(int argc, char **argv) {
       print_metrics();
     }
 
-    // write dump file
-    {
-      FILE *ftmp = fopen(dump_path, "w");
-      if (ftmp == NULL) {
-        fprintf(stderr, "ERROR: opening `%s': %s\n", dump_path,
-                strerror(errno));
-      }
-      int addr;
-      for (addr = dump_start; addr < dump_end; addr += 4) {
-        int data = mem[addr] | (mem[addr + 1] << 8) | (mem[addr + 2] << 16) |
-                   (mem[addr + 3] << 24);
-        fprintf(ftmp, "%08x\n", data);
-      }
-      fclose(ftmp);
-    }
+    write_dump_file(std::string(dump_path), mem, dump_start, dump_end);
   }
 
 #if defined(TRACE_VCD) || defined(TRACE_FST)
@@ -583,31 +590,41 @@ auto falling_edge(Vvproc_top *top) -> void {
   top->eval();
 }
 
-auto print_trace(unsigned pc, unsigned instruction) -> void {
+auto print_trace(unsigned pc, unsigned instruction, uint64_t cycle) -> void {
 
   // auto pc_if = top->vproc_top->core->pc_if;
   // auto instr_if = top->vproc_top->core->instruction_if;
   static uint64_t last_cycle = 0;
 
-  inst_trace_file << std::hex << std::setw(8) << std::setfill('0') << pc << ", "
-                  << std::setw(8) << std::setfill('0') << instruction << ", "
-                  << std::dec << cycles << ", delta: " << cycles - last_cycle
+  inst_trace_file << std::hex << std::setw(8) << std::setfill('0') << pc
+                  << ", ";
+  if (instr_print_style == InstructionPrintStyle::gcc) {
+    inst_trace_file << std::setw(8) << std::setfill('0') << instruction;
+  } else {
+    inst_trace_file << std::setw(2) << std::setfill('0') << (instruction & 0xFF)
+                    << " " << std::setw(2) << std::setfill('0')
+                    << ((instruction & 0xFF00) >> 8) << " " << std::setw(2)
+                    << std::setfill('0') << ((instruction & 0xFF0000) >> 16)
+                    << " " << std::setw(2) << std::setfill('0')
+                    << ((instruction & 0xFF000000) >> 24);
+  }
+  inst_trace_file << ", " << std::dec << cycle << ", " << cycle - last_cycle
                   << "\n";
 
-  last_cycle = cycles;
+  last_cycle = cycle;
 }
 
-auto check_for_fail(int if_pc) -> bool {
+auto check_for_fail(int pc) -> bool {
 
   // A jump to address 0x78 is a failed test caused by mismatched output
-  if (if_pc == FAIL_MISMATCH_ADDRESS) {
+  if (pc == FAIL_MISMATCH_ADDRESS) {
     fprintf(stderr, "ERROR: TEST FAILURE - Output Mismatch\n");
     return true;
   }
 
   // A jump to address 0x74 is a failed test caused by an interrupt being
   // called (all other interrupts also funnel here)
-  if (if_pc == FAIL_INTERRUPT_ADDRESS) {
+  if (pc == FAIL_INTERRUPT_ADDRESS) {
     fprintf(stderr, "ERROR: TEST FAILURE - Interrupt Called\n");
     return true;
   }
@@ -748,6 +765,57 @@ auto check_vector_result(Vvproc_top *top) -> void {
 
   auto cur_vec_len_bytes = check_sew(top);
   check_lmul(cur_vec_len_bytes, top);
+}
+
+auto write_dump_file(std::string dump_path, unsigned char *mem, int dump_start,
+                     int dump_end) -> void {
+
+  FILE *ftmp = fopen(dump_path.c_str(), "w");
+  if (ftmp == NULL) {
+    fprintf(stderr, "ERROR: opening `%s': %s\n", dump_path.c_str(),
+            strerror(errno));
+  }
+  int addr;
+  for (addr = dump_start; addr < dump_end; addr += 4) {
+    int data = mem[addr] | (mem[addr + 1] << 8) | (mem[addr + 2] << 16) |
+               (mem[addr + 3] << 24);
+    fprintf(ftmp, "%08x\n", data);
+  }
+  fclose(ftmp);
+}
+
+auto read_program_file(std::string prog_path, unsigned char *mem,
+                       int mem_sz) -> bool {
+  FILE *ftmp = fopen(prog_path.c_str(), "r");
+  if (ftmp == NULL) {
+    fprintf(stderr, "WARNING: skipping `%s': %s\n", prog_path.c_str(),
+            strerror(errno));
+    return false;
+  }
+  memset(mem, 0, mem_sz);
+  char buf[256];
+  int addr = 0;
+  while (fgets(buf, sizeof(buf), ftmp) != NULL) {
+    if (buf[0] == '#' || buf[0] == '/')
+      continue;
+    char *ptr = buf;
+    if (buf[0] == '@') {
+      addr = strtol(ptr + 1, &ptr, 16) * 4;
+      while (*ptr == ' ')
+        ptr++;
+    }
+    while (*ptr != '\n' && *ptr != 0) {
+      int data = strtol(ptr, &ptr, 16);
+      int i;
+      for (i = 0; i < 4; i++)
+        mem[addr + i] = data >> (8 * i);
+      addr += 4;
+      while (*ptr == ' ')
+        ptr++;
+    }
+  }
+  fclose(ftmp);
+  return true;
 }
 
 double sc_time_stamp() { return main_time; }

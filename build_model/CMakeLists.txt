@@ -213,7 +213,8 @@ verilate(verilated_model SOURCES  ${CV32E40X_SOURCE} ${VICUNA_SRCS} ${FPU_SS_SOU
 	                          -Wno-UNSIGNED -Wno-IMPLICIT -Wno-LITENDIAN -Wno-CASEINCOMPLETE        
 	                          -Wno-SYMRSVDWORD -Wno-BLKANDNBLK -Wno-BLKSEQ -Wno-SYNCASYNCNET        
 	                          -Wno-COMBDLY 
-	                          -Wno-WIDTHCONCAT         
+	                          -Wno-WIDTHCONCAT
+                            #   --threads 6         
                               #+define+COREV_ASSERT_OFF       #Fixes UVM error with CV32E40X (Needed when not using -DVPROC_SVA)
 	                          --clk clk_i
 	                          ${TRACE_FLAG} 
