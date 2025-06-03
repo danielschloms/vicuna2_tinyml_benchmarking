@@ -6,7 +6,10 @@ from difflib import SequenceMatcher
 import decoder
 import csv
 import os
+import re
 
+from util import blue, red, bold
+from config import V_SHORT_SIGNAL
 
 class TerminalColors:
     HEADER = "\033[95m"
@@ -20,7 +23,25 @@ class TerminalColors:
     UNDERLINE = "\033[4m"
 
 
-V_ARITH_INSTRS = ["vadd_vv", "vsetvli"]
+# vset(i)vl(i) retires after ID
+DECODE_RETIRE = ["vsetvl", "vsetvli", "vsetivli"]
+
+# Instructions that take the short signal path in the vector core after Dispatch
+# V_SHORT_SIGNAL = ["vadd_vv"]
+
+# Instructions that signal completion after the V-Execute stage
+V_LONG_SIGNAL = ["vle32_v", "vse32_u"]
+
+TRACK_STAGES = [
+    "ID_stage",
+    "DISP_stage",
+    "WB_stage",
+    "EX_stage",
+    "V_WB_stage",
+    "V_RES_stage",
+]
+PRINT_STAGES = ["ID_stage", "DISP_stage", "EX_stage", "V_WB_stage", "V_RES_stage"]
+MAX_STAGE_NAME_LEN = len(max(PRINT_STAGES, key=len))
 TARGET_SW = "bench"
 START_LABEL = "address_match_start"
 END_LABEL = "address_match_end"
@@ -34,6 +55,8 @@ ETISS_DUMP_DIR = (
     f"{os.environ["WS_PATH"]}/gen_perfsim/target_sw/examples/Vicuna/custom/dump"
 )
 ETISS_DUMP_FILE = f"{ETISS_DUMP_DIR}/{TARGET_SW}.dump"
+
+STAGE_IN_COL = True
 
 
 def read_addresses() -> dict:
@@ -56,10 +79,10 @@ def read_addresses() -> dict:
             if f"<{END_LABEL}>:" in line:
                 etiss_end = int(line.split(" ")[0], 16)
 
-    print(f"RTL Start Address: {verilator_start:08x}")
-    print(f"RTL End Address: {verilator_end:08x}")
-    print(f"ETISS Start Address: {etiss_start:08x}")
-    print(f"ETISS End Address: {etiss_end:08x}")
+    print(f"(AddressMatcher) RTL Start Address: {verilator_start:08x}")
+    print(f"(AddressMatcher) RTL End Address: {verilator_end:08x}")
+    print(f"(AddressMatcher) ETISS Start Address: {etiss_start:08x}")
+    print(f"(AddressMatcher) ETISS End Address: {etiss_end:08x}")
 
     return {
         "e_start": etiss_start,
@@ -87,35 +110,45 @@ def write_out(
 ) -> None:
     with open(outfile_path, "w", encoding="utf-8") as outfile:
 
+        longdash = 153
+        shortdash = 39
+
         if initial:
             outfile.write("Initial:\n")
-            outfile.write("-" * 39 + "\n")
+            outfile.write("-" * shortdash + "\n")
             outfile.write("ETISS              | Verilator\n")
-            outfile.write("-" * 39 + "\n")
+            outfile.write("-" * shortdash + "\n")
             outfile.writelines(initial)
-            outfile.write("-" * 39 + "\n")
+            outfile.write("-" * shortdash + "\n")
 
         outfile.write("Matching:\n")
-        outfile.write("-" * 66 + "\n")
+        outfile.write("-" * longdash + "\n")
         outfile.write(
-            "Instr E  | Asm E    | Instr V  | Asm V    | Delta ETISS | Delta RTL   | Diff ETISS - RTL\n"
+            "Instr E  | Asm E    | Instr V  | Asm V    | Delta ETISS | Delta RTL   | Diff E - V  | "
         )
-        outfile.write("-" * 66 + "\n")
+        for name in PRINT_STAGES:
+            outfile.write(
+                name
+                + " " * (MAX_STAGE_NAME_LEN + 6 if STAGE_IN_COL else 14 - len(name))
+                + "| "
+            )
+        outfile.write("\n")
+        outfile.write("-" * longdash + "\n")
         outfile.writelines(matching)
-        outfile.write("-" * 66 + "\n")
+        outfile.write("-" * longdash + "\n")
         outfile.write(
             f"ETISS WB cycles:   {etiss_cycles[0]} | RTL cycles: {verilator_cycles} | Diff: {etiss_cycles[0] - verilator_cycles}\n"
         )
         outfile.write(
             f"ETISS DISP cycles: {etiss_cycles[1]} | RTL cycles: {verilator_cycles} | Diff: {etiss_cycles[1] - verilator_cycles}\n"
         )
-        outfile.write("-" * 66 + "\n")
+        outfile.write("-" * longdash + "\n")
 
         if trailing:
             outfile.write("Trailing:\n")
-            outfile.write("-" * 39 + "\n")
+            outfile.write("-" * shortdash + "\n")
             outfile.write("ETISS              | Verilator\n")
-            outfile.write("-" * 39 + "\n")
+            outfile.write("-" * shortdash + "\n")
             outfile.writelines(trailing)
 
 
@@ -140,11 +173,13 @@ def read_traces(etiss_trace_path, verilator_trace_path, addrs) -> tuple[dict, di
                 pc = int(split_line[0], base=16)
                 # print(f"{pc:08x}")
                 if pc == addrs["v_start"]:
-                    print(f"Matched Verilator start: {verilator_index}")
+                    print(
+                        f"(AddressMatcher) Matched Verilator start: {verilator_index}"
+                    )
                     verilator["start"] = verilator_index
 
                 if pc == addrs["v_end"]:
-                    print(f"Matched Verilator end: {verilator_index}")
+                    print(f"(AddressMatcher) Matched Verilator end: {verilator_index}")
                     verilator["end"] = verilator_index
 
                 verilator["asm"].append(int(split_line[1], base=16))
@@ -168,8 +203,7 @@ def read_traces(etiss_trace_path, verilator_trace_path, addrs) -> tuple[dict, di
             "asm": [],
             "instrs": [],
             "delta": [],
-            "wb_cycles": [],
-            "disp_cycles": [],
+            "stage_cycles": {name: [] for name in TRACK_STAGES},
             "cycles": 0,
             "start": 0,
             "end": 0,
@@ -181,10 +215,10 @@ def read_traces(etiss_trace_path, verilator_trace_path, addrs) -> tuple[dict, di
             if len(line) > 3:
                 pc = int(split_line[0][2:].lstrip("0")[:-1], base=16)
                 if pc == addrs["e_start"]:
-                    print(f"Matched ETISS start: {etiss_index}")
+                    print(f"(AddressMatcher) Matched ETISS start: {etiss_index}")
                     etiss["start"] = etiss_index
                 if pc == addrs["e_end"]:
-                    print(f"Matched ETISS end: {etiss_index}")
+                    print(f"(AddressMatcher) Matched ETISS end: {etiss_index}")
                     etiss["end"] = etiss_index
                 etiss["asm"].append(int(split_line[3], 2))
                 etiss["instrs"].append(split_line[1])
@@ -200,27 +234,37 @@ def read_traces(etiss_trace_path, verilator_trace_path, addrs) -> tuple[dict, di
         reader = csv.reader(etiss_timing)
         previous = 0
         index = 0
-        index_wb = -1
-        index_disp = 3
+        indices = {name: 0 for name in TRACK_STAGES}
+        assign_stages = True
         for row in reader:
             if row[0] == "IF_stage":
+                if not assign_stages:
+                    continue
+                for i, stage in enumerate(row):
+                    print(f"(Timing) Available stage: {stage}")
+                    if stage in TRACK_STAGES:
+                        indices[stage] = i
+                assign_stages = False
                 continue
 
-            row_i = index_wb
+            row_i = indices["EX_stage"]
+
             try:
-                if etiss["instrs"][index] in V_ARITH_INSTRS:
-                    # Take DISP time if completion is signaled from Dispatch stage
-                    # WB time otherwise
-                    row_i = index_disp
+                instr_name = etiss["instrs"][index]
+                # if instr_name in DECODE_RETIRE:
+                #     row_i = indices["ID_stage"]
+                if instr_name in V_SHORT_SIGNAL:
+                    row_i = indices["DISP_stage"]
+                elif instr_name in V_LONG_SIGNAL:
+                    row_i = indices["V_RES_stage"]
             except:
                 print(f"Error index {index}")
                 exit(1)
 
-            disp_cycles = int(row[index_disp])
-            wb_cycles = int(row[index_wb])
+            for name, stage_index in indices.items():
+                etiss["stage_cycles"][name].append(int(row[stage_index]))
+
             cycles = int(row[row_i])
-            etiss["wb_cycles"].append(wb_cycles)
-            etiss["disp_cycles"].append(disp_cycles)
             etiss["delta"].append(cycles - previous)
             previous = cycles
             index += 1
@@ -232,6 +276,7 @@ def read_traces(etiss_trace_path, verilator_trace_path, addrs) -> tuple[dict, di
 
 def main() -> None:
 
+    print(blue(bold(f"Analyzing {TARGET_SW}")))
     write_trailing = False
     write_initial = False
     if "-t" in sys.argv:
@@ -248,13 +293,17 @@ def main() -> None:
     ).find_longest_match()
 
     print(f"(SequenceMatcher) Matched {longest_match.size} instructions")
+    n_instructions_v = verilator["end"] - verilator["start"]
+    n_instructions_e = etiss["end"] - etiss["start"]
+    if n_instructions_v != n_instructions_e:
+        print("(AddressMatcher) RTL and ETISS instructions not equal!")
+
     print(
-        f"(AddressMatcher) Verilator: ({verilator["start"]}, {verilator["end"]}): {verilator["end"] - verilator["start"]} Instructions"
+        f"(AddressMatcher) Verilator: ({verilator["start"]}, {verilator["end"]}): {n_instructions_v} Instructions"
     )
     print(
-        f"(AddressMatcher) ETISS: ({etiss["start"]}, {etiss["end"]}): {etiss["end"] - etiss["start"]} Instructions"
+        f"(AddressMatcher) ETISS: ({etiss["start"]}, {etiss["end"]}): {n_instructions_e} Instructions"
     )
-    # read_addresses()
 
     # match_start_etiss = longest_match.a
     # match_end_etiss = longest_match.a + longest_match.size
@@ -273,22 +322,49 @@ def main() -> None:
     match_start_verilator = verilator["start"]
     match_end_verilator = verilator["end"]
 
-    sum_diffs = sum(
-        [
-            d_e - d_v
-            for d_e, d_v in zip(
-                etiss["delta"][match_start_etiss:match_end_etiss],
-                verilator["delta"][match_start_verilator:match_end_verilator],
-            )
-        ]
+    delta_zip = list(
+        zip(
+            etiss["delta"][match_start_etiss:match_end_etiss],
+            verilator["delta"][match_start_verilator:match_end_verilator],
+        )
     )
 
-    print(f"Sum of differences: {sum_diffs}")
+    sum_diffs = sum(d_e - d_v for d_e, d_v in delta_zip)
+    abs_sum_diffs = sum(abs(d_e - d_v) for d_e, d_v in delta_zip)
+    max_start_cycles_e = max(
+        stage[match_start_etiss] for stage in etiss["stage_cycles"].values()
+    )
+    cpi_e = (
+        max(
+            stage[match_end_etiss] - max_start_cycles_e
+            for stage in etiss["stage_cycles"].values()
+        )
+        / n_instructions_e
+    )
+    cpi_v = (
+        verilator["cycles"][match_end_verilator]
+        - verilator["cycles"][match_start_verilator]
+    ) / n_instructions_v
+
+    cpi_factor = cpi_e / cpi_v
+
+    print(f"(Cycles) Sum of differences: {sum_diffs}")
+    print(f"(Cycles) Absolute sum of differences: {abs_sum_diffs}")
     print(
-        f"Final ETISS cycles: WB: {etiss["wb_cycles"][-1]}, DISP: {etiss["disp_cycles"][-1]}"
+        f"(Cycles) Average difference per instruction: {abs_sum_diffs / n_instructions_e:.4f}"
     )
+    print(f"(Cycles) CPI ETISS: {cpi_e:.4f}, CPI RTL: {cpi_v:.4f}")
+    print(f"(Cycles) ETISS CPI is {cpi_factor * 100:.4f}% of RTL CPI")
+    print(f"(Cycles) Error: {(cpi_factor - 1) * 100 :.4f}%")
 
-    eq = {True: TerminalColors.OKGREEN, False: TerminalColors.FAIL}
+    stage_cycles = list(
+        zip(
+            *[
+                etiss["stage_cycles"][name][match_start_etiss:match_end_etiss]
+                for name in PRINT_STAGES
+            ]
+        )
+    )
 
     matching = [
         (
@@ -298,19 +374,32 @@ def main() -> None:
             f" {asm_v:08x} |"
             f" dE: {d_e:7} |"
             f" dV: {d_v:7} |"
-            f" Diff: {d_e - d_v:3}"
+            f" Diff: {d_e - d_v:5} |"
+            f" {re.sub(r"[\[\],\']", "", str([(name + ": " if STAGE_IN_COL else "") + f"{(s_cycles[i]):13} |" for i, name in enumerate(PRINT_STAGES)]))}"
+            f" WB V: {rtl_wb_cycles:10} |"
             f"{" (A!)" if asm_e != asm_v else ""}"
             f"{" (I!)" if ins_e != ins_v else ""}"
             f"{" (D!)" if d_e != d_v else ""}"
             f"\n"
         )
-        for (asm_e, ins_e, asm_v, ins_v, d_e, d_v) in zip(
+        for (
+            asm_e,
+            ins_e,
+            asm_v,
+            ins_v,
+            d_e,
+            d_v,
+            s_cycles,
+            rtl_wb_cycles,
+        ) in zip(
             etiss["asm"][match_start_etiss:match_end_etiss],
             etiss["instrs"][match_start_etiss:match_end_etiss],
             verilator["asm"][match_start_verilator:match_end_verilator],
             verilator["instrs"][match_start_verilator:match_end_verilator],
             etiss["delta"][match_start_etiss:match_end_etiss],
             verilator["delta"][match_start_verilator:match_end_verilator],
+            stage_cycles,
+            verilator["cycles"][match_start_verilator:match_end_verilator],
         )
     ]
 
@@ -354,9 +443,10 @@ def main() -> None:
         ]
 
     etiss_cycles = (
-        etiss["wb_cycles"][match_end_etiss - 1] - etiss["wb_cycles"][match_start_etiss],
-        etiss["disp_cycles"][match_end_etiss - 1]
-        - etiss["disp_cycles"][match_start_etiss],
+        etiss["stage_cycles"]["WB_stage"][match_end_etiss - 1]
+        - etiss["stage_cycles"]["WB_stage"][match_start_etiss],
+        etiss["stage_cycles"]["DISP_stage"][match_end_etiss - 1]
+        - etiss["stage_cycles"]["DISP_stage"][match_start_etiss],
     )
 
     write_out(
