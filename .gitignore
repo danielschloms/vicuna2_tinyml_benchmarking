@@ -8,3 +8,5 @@ benchmark_sources/third_party/*
 benchmark_sources/tflite-micro
 benchmark_sources/tensorflow/*
 benchmark_sources/signal/*
+
+match.txt
