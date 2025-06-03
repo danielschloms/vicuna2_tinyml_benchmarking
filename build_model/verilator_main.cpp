@@ -18,7 +18,6 @@
 #include <iomanip>
 #include <iostream>
 #include <string>
-#include <type_traits>
 
 #include "Vvproc_top_cv32e40x_core__pi1.h"
 #include "Vvproc_top_vproc_top.h"
@@ -107,8 +106,8 @@ constexpr auto MEMORY_WIDTH = 32;  // TODO: This should be a build argument
 auto inst_trace_file = std::ofstream{};
 auto instr_print_style = InstructionPrintStyle::gcc;
 
-int end_cnt = 0;   // Number of cycles after address 0 was requested
-int abort_cnt = 0; // Number of cycles since mem_req_o last toggled
+uint64_t end_cnt = 0;   // Number of cycles after address 0 was requested
+uint64_t abort_cnt = 0; // Number of cycles since mem_req_o last toggled
 
 bool main_reached = true; // Detect if main has been reached to begin
                           // collecting statistics
@@ -126,8 +125,8 @@ int instr_to_retire = -1;
 int pc_to_retire = -1;
 
 // - Variables for processor metrics -
-uint64_t cycles = 0;  // Cycle count
-int instructions = 0; // Instruction Count
+uint64_t cycles = 0;       // Cycle count
+uint64_t instructions = 0; // Instruction Count
 
 // Cycles stalled due to waiting for a result from the XIF interface
 int cycles_stalled_XIF = 0;
@@ -207,6 +206,16 @@ auto write_dump_file(std::string dump_path, unsigned char *mem, int dump_start,
 
 auto read_program_file(std::string prog_path, unsigned char *mem,
                        int mem_sz) -> bool;
+
+auto write_reference_file(std::string ref_path, int ref_start, int ref_end,
+                          unsigned char *mem) -> void;
+
+/**
+ * @brief Update cycle and instruction counts, as well as print trace
+ * TODO: Trace printing is something else and belongs somewhere else
+ */
+auto update_counts(Vvproc_top *top, bool inst_trace_out,
+                   int mem_req_o_tmp) -> void;
 
 // --- Main ---
 
@@ -335,20 +344,7 @@ int main(int argc, char **argv) {
 
     read_program_file(std::string(prog_path), mem, mem_sz);
 
-    // write reference file
-    {
-      FILE *ftmp = fopen(ref_path, "w");
-      if (ftmp == NULL) {
-        fprintf(stderr, "ERROR: opening `%s': %s\n", ref_path, strerror(errno));
-      }
-      int addr;
-      for (addr = ref_start; addr < ref_end; addr += 4) {
-        int data = mem[addr] | (mem[addr + 1] << 8) | (mem[addr + 2] << 16) |
-                   (mem[addr + 3] << 24);
-        fprintf(ftmp, "%08x\n", data);
-      }
-      fclose(ftmp);
-    }
+    write_reference_file(std::string(ref_path), ref_start, ref_end, mem);
 
     // simulate program execution
     {
@@ -495,47 +491,7 @@ int main(int argc, char **argv) {
 
         // Cycle count and instruction count
         if (main_reached) {
-
-          abort_cnt = (top->mem_req_o == mem_req_o_tmp) ? abort_cnt + 1 : 0;
-
-          if (!exiting) {
-            cycles++;
-            if (inst_trace_out and current_WB_PC != last_WB_PC) {
-              auto instr = top->vproc_top->core->instruction_wb;
-              auto pc = top->vproc_top->core->pc_wb;
-              auto opcode = instr & 0b1111111;
-              auto ls_width = (instr >> 12) & 0b111;
-              static constexpr auto load_fp_opcode = 0x7;
-              static constexpr auto store_fp_opcode = 0x27;
-              static constexpr auto vector_opcode = 0x57;
-              static bool vector_instr_waiting = false;
-
-              // If vector instruction is leaving, print with previous cycle
-              if (vector_instr_waiting) {
-                print_trace(pc_to_retire, instr_to_retire, cycles - 1);
-                vector_instr_waiting = false;
-              }
-
-              // Vector loads are differentiated by width, 0 or width > 4 is
-              // vector
-              auto is_vector_ls =
-                  (opcode == load_fp_opcode or opcode == store_fp_opcode) and
-                  (ls_width == 0 or ls_width > 0b100);
-
-              // Don't print/retire vector loads/stores immediately, wait for
-              // next instruction
-              if (is_vector_ls or opcode == vector_opcode) {
-                vector_instr_waiting = true;
-                instr_to_retire = instr;
-                pc_to_retire = pc;
-              } else {
-                print_trace(top->vproc_top->core->pc_wb, instr, cycles);
-              }
-            }
-            if (current_WB_PC != last_WB_PC) {
-              instructions++;
-            }
-          }
+          update_counts(top, inst_trace_out, mem_req_o_tmp);
         }
 
         // Check if a result from the vector unit is ready and accepted
@@ -681,7 +637,7 @@ auto test_memory_mapped(Vvproc_top *top,
 
 auto print_metrics() -> void {
   fprintf(stderr, "Total Cycles: %lu\n", cycles);
-  fprintf(stderr, "Instruction Count: %d CPI : %f \n\n", instructions,
+  fprintf(stderr, "Instruction Count: %lu CPI : %f \n\n", instructions,
           ((float)(cycles)) / ((float)instructions));
 
   fprintf(stderr, "Number of Vector Instructions Executed: %d  \n",
@@ -816,6 +772,70 @@ auto read_program_file(std::string prog_path, unsigned char *mem,
   }
   fclose(ftmp);
   return true;
+}
+
+auto write_reference_file(std::string ref_path, int ref_start, int ref_end,
+                          unsigned char *mem) -> void {
+  FILE *ftmp = fopen(ref_path.c_str(), "w");
+  if (ftmp == NULL) {
+    fprintf(stderr, "ERROR: opening `%s': %s\n", ref_path.c_str(),
+            strerror(errno));
+  }
+  for (int addr = ref_start; addr < ref_end; addr += 4) {
+    int data = mem[addr] | (mem[addr + 1] << 8) | (mem[addr + 2] << 16) |
+               (mem[addr + 3] << 24);
+    fprintf(ftmp, "%08x\n", data);
+  }
+  fclose(ftmp);
+}
+
+auto update_counts(Vvproc_top *top, bool inst_trace_out,
+                   int mem_req_o_tmp) -> void {
+
+  abort_cnt = (top->mem_req_o == mem_req_o_tmp) ? abort_cnt + 1 : 0;
+
+  if (!exiting) {
+    cycles++;
+    if (inst_trace_out and current_WB_PC != last_WB_PC) {
+      auto instr = top->vproc_top->core->instruction_wb;
+      auto pc = top->vproc_top->core->pc_wb;
+      auto opcode = instr & 0b1111111;
+      auto ls_width = (instr >> 12) & 0b111;
+      static constexpr auto load_fp_opcode = 0x7;
+      static constexpr auto store_fp_opcode = 0x27;
+      static constexpr auto vector_opcode = 0x57;
+      static bool vector_instr_waiting = false;
+
+      // If vector instruction is leaving, print with previous cycle
+      if (vector_instr_waiting) {
+        int stall = top->vproc_top->core->data_stall_wb;
+        print_trace(pc_to_retire, instr_to_retire, cycles - 1);
+        vector_instr_waiting = false;
+      }
+
+      // Vector loads are differentiated by width, 0 or width > 4 is
+      // vector
+      auto is_vector_ls =
+          (opcode == load_fp_opcode or opcode == store_fp_opcode) and
+          (ls_width == 0 or ls_width > 0b100);
+
+      auto is_vset = ((instr >> 12) & 0b111) == 7;
+
+      // Don't print/retire vector loads/stores immediately, wait for
+      // next instruction
+      if (is_vector_ls or ((opcode == vector_opcode) and not is_vset)) {
+        vector_instr_waiting = true;
+        instr_to_retire = instr;
+        pc_to_retire = pc;
+      } else {
+        print_trace(pc, instr, cycles);
+      }
+    }
+
+    if (current_WB_PC != last_WB_PC) {
+      instructions++;
+    }
+  }
 }
 
 double sc_time_stamp() { return main_time; }
