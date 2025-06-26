@@ -9,70 +9,82 @@ import os
 import re
 
 from util import blue, red, bold
-from config import V_SHORT_SIGNAL
-
-class TerminalColors:
-    HEADER = "\033[95m"
-    OKBLUE = "\033[94m"
-    OKCYAN = "\033[96m"
-    OKGREEN = "\033[92m"
-    WARNING = "\033[93m"
-    FAIL = "\033[91m"
-    ENDC = "\033[0m"
-    BOLD = "\033[1m"
-    UNDERLINE = "\033[4m"
-
+from config import V_SHORT_SIGNAL, V_DISP_NAME
 
 # vset(i)vl(i) retires after ID
-DECODE_RETIRE = ["vsetvl", "vsetvli", "vsetivli"]
-
-# Instructions that take the short signal path in the vector core after Dispatch
-# V_SHORT_SIGNAL = ["vadd_vv"]
+VSET_INSTRS = ["vsetvl", "vsetvli", "vsetivli"]
 
 # Instructions that signal completion after the V-Execute stage
-V_LONG_SIGNAL = ["vle32_v", "vse32_u"]
+V_LONG_SIGNAL = ["vle32_v", "vle16_v", "vle8_v", "vse32_u", "vse16_u", "vse8_u"]
+
+DELTA_TRESHOLD = 10
 
 TRACK_STAGES = [
+    "IF_stage",
     "ID_stage",
-    "DISP_stage",
-    "WB_stage",
     "EX_stage",
+    V_DISP_NAME,
+    "V_EX_stage",
     "V_WB_stage",
     "V_RES_stage",
+    "R_SIG_stage",
+    "R_RET_stage",
+    "WB_stage",
 ]
-PRINT_STAGES = ["ID_stage", "DISP_stage", "EX_stage", "V_WB_stage", "V_RES_stage"]
+
+PRINT_STAGES = [
+    "ID_stage",
+    "EX_stage",
+    V_DISP_NAME,
+    "V_EX_stage",
+    "V_WB_stage",
+    "V_RES_stage",
+    "R_SIG_stage",
+    "R_RET_stage",
+]
+
 MAX_STAGE_NAME_LEN = len(max(PRINT_STAGES, key=len))
-TARGET_SW = "bench"
 START_LABEL = "address_match_start"
 END_LABEL = "address_match_end"
 
-VERILATOR_DUMP_DIR = (
-    f"{os.environ["WS_PATH"]}/vicuna2_tinyml_benchmarking/build_from_other/vector"
+VERILATOR_BUILD_DIR = (
+    f"{os.environ["WS_PATH"]}/vicuna2_tinyml_benchmarking/build_from_other"
 )
-VERILATOR_DUMP_FILE = f"{VERILATOR_DUMP_DIR}/{TARGET_SW}_dump.txt"
+VERILATOR_GROUPS = ["vector", "ml_bench/ml_bench"]
 
 ETISS_DUMP_DIR = (
     f"{os.environ["WS_PATH"]}/gen_perfsim/target_sw/examples/Vicuna/custom/dump"
 )
-ETISS_DUMP_FILE = f"{ETISS_DUMP_DIR}/{TARGET_SW}.dump"
 
 STAGE_IN_COL = True
 
 
-def read_addresses() -> dict:
+def read_addresses(target_sw: str) -> dict:
     """Returns a dictionary with start and end addresses."""
     verilator_start = 0
     verilator_end = 0
     etiss_start = 0
     etiss_end = 0
-    with open(VERILATOR_DUMP_FILE) as verilator_dump:
-        for line in verilator_dump:
-            if f"<{START_LABEL}>:" in line:
-                verilator_start = int(line.split(" ")[0], 16)
-            if f"<{END_LABEL}>:" in line:
-                verilator_end = int(line.split(" ")[0], 16)
 
-    with open(ETISS_DUMP_FILE) as etiss_dump:
+    for group in VERILATOR_GROUPS:
+        verilator_dump_file = f"{VERILATOR_BUILD_DIR}/{group}/{target_sw}_dump.txt"
+        try:
+            print(f"(AddressMatcher) Trying {group}")
+            with open(verilator_dump_file) as verilator_dump:
+                for line in verilator_dump:
+                    if f"<{START_LABEL}>:" in line:
+                        verilator_start = int(line.split(" ")[0], 16)
+                    if f"<{END_LABEL}>:" in line:
+                        verilator_end = int(line.split(" ")[0], 16)
+            
+            break
+
+        except:
+            print(f"(AddressMatcher) Could not find {target_sw} in {group}.")
+            pass
+
+    etiss_dump_file = f"{ETISS_DUMP_DIR}/{target_sw}.dump"
+    with open(etiss_dump_file) as etiss_dump:
         for line in etiss_dump:
             if f"<{START_LABEL}>:" in line:
                 etiss_start = int(line.split(" ")[0], 16)
@@ -152,7 +164,9 @@ def write_out(
             outfile.writelines(trailing)
 
 
-def read_traces(etiss_trace_path, verilator_trace_path, addrs) -> tuple[dict, dict]:
+def read_traces(
+    etiss_trace_path, etiss_timing_path, verilator_trace_path, addrs
+) -> tuple[dict, dict]:
     with open(verilator_trace_path, "r", encoding="utf-8") as verilator_trace, open(
         "verilator/trace_t", "w", encoding="utf-8"
     ) as new_trace_v:
@@ -230,7 +244,7 @@ def read_traces(etiss_trace_path, verilator_trace_path, addrs) -> tuple[dict, di
             else:
                 print(line)
 
-    with open("etiss/etiss_timing.csv") as etiss_timing:
+    with open(etiss_timing_path) as etiss_timing:
         reader = csv.reader(etiss_timing)
         previous = 0
         index = 0
@@ -251,13 +265,12 @@ def read_traces(etiss_trace_path, verilator_trace_path, addrs) -> tuple[dict, di
 
             try:
                 instr_name = etiss["instrs"][index]
-                # if instr_name in DECODE_RETIRE:
-                #     row_i = indices["ID_stage"]
-                if instr_name in V_SHORT_SIGNAL:
-                    row_i = indices["DISP_stage"]
+                if instr_name in V_SHORT_SIGNAL + VSET_INSTRS:
+                    row_i = indices["R_SIG_stage"]
                 elif instr_name in V_LONG_SIGNAL:
-                    row_i = indices["V_RES_stage"]
-            except:
+                    row_i = indices["V_EX_stage"]
+            except Exception as e:
+                print("Exception: " + str(e))
                 print(f"Error index {index}")
                 exit(1)
 
@@ -274,9 +287,20 @@ def read_traces(etiss_trace_path, verilator_trace_path, addrs) -> tuple[dict, di
     return (etiss, verilator)
 
 
+def usage() -> None:
+    """Usage function"""
+    print("Usage: transform.py <target sw> [-t] [-i]")
+    exit(1)
+
+
 def main() -> None:
 
-    print(blue(bold(f"Analyzing {TARGET_SW}")))
+    if len(sys.argv) < 2:
+        usage()
+
+    target_sw = sys.argv[1]
+
+    print(blue(bold(f"Analyzing {target_sw}")))
     write_trailing = False
     write_initial = False
     if "-t" in sys.argv:
@@ -285,14 +309,17 @@ def main() -> None:
         write_initial = True
 
     etiss, verilator = read_traces(
-        "etiss/etiss_asm.txt", "verilator/trace.txt", read_addresses()
+        f"etiss/{target_sw}_trace.txt",
+        f"etiss/{target_sw}_timing.csv",
+        f"verilator/{target_sw}_trace.txt",
+        read_addresses(target_sw),
     )
 
-    longest_match = SequenceMatcher(
-        None, etiss["asm"], verilator["asm"]
-    ).find_longest_match()
+    # longest_match = SequenceMatcher(
+    #     None, etiss["asm"], verilator["asm"]
+    # ).find_longest_match()
 
-    print(f"(SequenceMatcher) Matched {longest_match.size} instructions")
+    # print(f"(SequenceMatcher) Matched {longest_match.size} instructions")
     n_instructions_v = verilator["end"] - verilator["start"]
     n_instructions_e = etiss["end"] - etiss["start"]
     if n_instructions_v != n_instructions_e:
@@ -370,7 +397,7 @@ def main() -> None:
         (
             f"{ins_e:8} |"
             f" {asm_e:08x} |"
-            f" {ins_v:8} |"
+            f"{ins_v:8}"
             f" {asm_v:08x} |"
             f" dE: {d_e:7} |"
             f" dV: {d_v:7} |"
@@ -379,7 +406,8 @@ def main() -> None:
             f" WB V: {rtl_wb_cycles:10} |"
             f"{" (A!)" if asm_e != asm_v else ""}"
             f"{" (I!)" if ins_e != ins_v else ""}"
-            f"{" (D!)" if d_e != d_v else ""}"
+            f"{" (D+!)" if d_e > d_v else " (D-!)" if d_e < d_v else ""}"
+            f"{" (DT!)" if abs(d_e - d_v) > DELTA_TRESHOLD else ""}"
             f"\n"
         )
         for (
@@ -445,12 +473,12 @@ def main() -> None:
     etiss_cycles = (
         etiss["stage_cycles"]["WB_stage"][match_end_etiss - 1]
         - etiss["stage_cycles"]["WB_stage"][match_start_etiss],
-        etiss["stage_cycles"]["DISP_stage"][match_end_etiss - 1]
-        - etiss["stage_cycles"]["DISP_stage"][match_start_etiss],
+        etiss["stage_cycles"][V_DISP_NAME][match_end_etiss - 1]
+        - etiss["stage_cycles"][V_DISP_NAME][match_start_etiss],
     )
 
     write_out(
-        "match.txt",
+        f"match_{target_sw}.txt",
         matching,
         initial,
         trailing,

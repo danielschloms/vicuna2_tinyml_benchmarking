@@ -29,7 +29,7 @@ instruction_table["0x04"]["2"] = "slti"
 instruction_table["0x04"]["3"] = "sltiu"
 instruction_table["0x04"]["4"] = "xori"
 instruction_table["0x04"]["5"]["0"] = "srli"
-instruction_table["0x04"]["5"]["16"] = "srai"
+instruction_table["0x04"]["5"]["32"] = "srai"
 instruction_table["0x04"]["6"] = "ori"
 instruction_table["0x04"]["7"] = "andi"
 ## Arithmetic & Computation Register to Register
