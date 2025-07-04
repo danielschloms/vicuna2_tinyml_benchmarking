@@ -98,7 +98,7 @@ constexpr auto FAIL_INTERRUPT_ADDRESS = 0x000000074u;
 constexpr auto SUCCESS_ADDRESS = 0x0000007Cu;
 
 constexpr auto START_TRACE_ADDRESS = MAIN_ADDRESS;
-constexpr auto STALL_CYCLES_THRESHOLD = 10'000;
+constexpr auto STALL_CYCLES_THRESHOLD = 100'000;
 
 constexpr auto MEMORY_LATENCY = 1; // TODO: This should be a build argument
 constexpr auto MEMORY_WIDTH = 32;  // TODO: This should be a build argument
@@ -444,6 +444,13 @@ int main(int argc, char **argv) {
         mem_ivalid_queue.shift();
         mem_idata_queue.shift();
         mem_ierr_queue.shift();
+
+        if (csv_out == 1 && main_reached && cycles > cycles_begin_trace) {
+          // log data once main has been reached and desired start point has
+          // been reached
+          log_cycle(top, tfp, fcsv);
+        }
+
         falling_edge(top);
 
         // Vicuna Linker always puts MAIN (or

@@ -406,8 +406,8 @@ def main() -> None:
             f" WB V: {rtl_wb_cycles:10} |"
             f"{" (A!)" if asm_e != asm_v else ""}"
             f"{" (I!)" if ins_e != ins_v else ""}"
-            f"{" (D+!)" if d_e > d_v else " (D-!)" if d_e < d_v else ""}"
-            f"{" (DT!)" if abs(d_e - d_v) > DELTA_TRESHOLD else ""}"
+            f"{"\n(D+!)" if d_e > d_v else "\n(D-!)" if d_e < d_v else ""}"
+            f"{"\n(DT!)" if abs(d_e - d_v) > DELTA_TRESHOLD else ""}"
             f"\n"
         )
         for (
