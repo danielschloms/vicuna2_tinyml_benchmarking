@@ -98,7 +98,7 @@ constexpr auto FAIL_INTERRUPT_ADDRESS = 0x000000074u;
 constexpr auto SUCCESS_ADDRESS = 0x0000007Cu;
 
 constexpr auto START_TRACE_ADDRESS = MAIN_ADDRESS;
-constexpr auto STALL_CYCLES_THRESHOLD = 100'000;
+constexpr auto STALL_CYCLES_THRESHOLD = 1'000'000;
 
 constexpr auto MEMORY_LATENCY = 1; // TODO: This should be a build argument
 constexpr auto MEMORY_WIDTH = 32;  // TODO: This should be a build argument
@@ -811,13 +811,13 @@ auto update_counts(Vvproc_top *top, bool inst_trace_out,
       static constexpr auto load_fp_opcode = 0x7;
       static constexpr auto store_fp_opcode = 0x27;
       static constexpr auto vector_opcode = 0x57;
-      static bool vector_instr_waiting = false;
+      static bool vls_instr_waiting = false;
 
       // If vector instruction is leaving, print with previous cycle
-      if (vector_instr_waiting) {
+      if (vls_instr_waiting) {
         int stall = top->vproc_top->core->data_stall_wb;
         print_trace(pc_to_retire, instr_to_retire, cycles - 1);
-        vector_instr_waiting = false;
+        vls_instr_waiting = false;
       }
 
       // Vector loads are differentiated by width, 0 or width > 4 is
@@ -826,12 +826,12 @@ auto update_counts(Vvproc_top *top, bool inst_trace_out,
           (opcode == load_fp_opcode or opcode == store_fp_opcode) and
           (ls_width == 0 or ls_width > 0b100);
 
-      auto is_vset = ((instr >> 12) & 0b111) == 7;
+      // auto is_vset = ((instr >> 12) & 0b111) == 7;
 
       // Don't print/retire vector loads/stores immediately, wait for
       // next instruction
-      if (is_vector_ls or ((opcode == vector_opcode) and not is_vset)) {
-        vector_instr_waiting = true;
+      if (is_vector_ls) {
+        vls_instr_waiting = true;
         instr_to_retire = instr;
         pc_to_retire = pc;
       } else {
