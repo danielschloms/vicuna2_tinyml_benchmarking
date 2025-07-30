@@ -2,6 +2,7 @@ V_DISP_NAME = "V_DISP_stage"
 
 INT_ARITH_VMV = ["vmv_v_v", "vmv_v_x", "vmv_v_i"]
 INT_ARITH_VMERGE = ["vmerge_vvm", "vmerge_vxm", "vmerge_vim"]
+INT_EXT = ["vsext_vf2", "vsext_vf4", "vsext_vf8", "vzext_vf2", "vzext_vf4", "vzext_vf8"]
 INT_ARITH_VV = [
     "vadd_vv",
     "vsub_vv",
@@ -9,6 +10,10 @@ INT_ARITH_VV = [
     "vwsubu_vv",
     "vwadd_vv",
     "vwsub_vv",
+    "vwaddu_w_vv",
+    "vwsubu_w_vv",
+    "vwadd_w_vv",
+    "vwsub_w_vv",
     "vadc_vvm",
     "vmadc_vv",
     "vsbc_vvm",
@@ -69,6 +74,10 @@ INT_ARITH_VX = [
     "vwsubu_vx",
     "vwadd_vx",
     "vwsub_vx",
+    "vwaddu_w_vx",
+    "vwsubu_w_vx",
+    "vwadd_w_vx",
+    "vwsub_w_vx",
     "vadc_vxm",
     "vmadc_vxm",
     "vmadc_vx",
@@ -157,11 +166,15 @@ INT_ARITH_VI = [
     "vslidedown_vi",
 ]
 
+ELEM_VV = [
+  "vcompress_vm"
+]
+
 V_SHORT_SIGNAL = (
-    INT_ARITH_VV + INT_ARITH_VX + INT_ARITH_VI + INT_ARITH_VMV + INT_ARITH_VMERGE
+    INT_ARITH_VV + INT_ARITH_VX + INT_ARITH_VI + INT_ARITH_VMV + INT_ARITH_VMERGE + INT_EXT + ELEM_VV
 )
 
-INT_REDUCE = [
-    "vrgather_vv",
-    "vrgatherei16_v",
-]
+# INT_REDUCE = [
+#     "vrgather_vv",
+#     "vrgatherei16_v",
+# ]

@@ -18,18 +18,22 @@ VSET_INSTRS = ["vsetvl", "vsetvli", "vsetivli"]
 V_LONG_SIGNAL = ["vle32_v", "vle16_v", "vle8_v", "vse32_u", "vse16_u", "vse8_u"]
 
 DELTA_TRESHOLD = 10
+VSET_TIMING_STAGE = "OFF_IQ_stage"
+FAST_TIMING_STAGE = "OFF_SIG_stage"
+SLOW_TIMING_STAGE = "V_EX_stage"
+SCALAR_TIMING_STAGE = "EX_stage"
 
 TRACK_STAGES = [
     "IF_stage",
     "ID_stage",
     "EX_stage",
+    "WB_stage",
     V_DISP_NAME,
     "V_EX_stage",
     "V_WB_stage",
     "V_RES_stage",
-    "R_SIG_stage",
-    "R_RET_stage",
-    "WB_stage",
+    "OFF_IQ_stage",
+    "OFF_SIG_stage",
 ]
 
 PRINT_STAGES = [
@@ -39,8 +43,8 @@ PRINT_STAGES = [
     "V_EX_stage",
     "V_WB_stage",
     "V_RES_stage",
-    "R_SIG_stage",
-    "R_RET_stage",
+    "OFF_IQ_stage",
+    "OFF_SIG_stage",
 ]
 
 MAX_STAGE_NAME_LEN = len(max(PRINT_STAGES, key=len))
@@ -50,7 +54,7 @@ END_LABEL = "address_match_end"
 VERILATOR_BUILD_DIR = (
     f"{os.environ["WS_PATH"]}/vicuna2_tinyml_benchmarking/build_from_other"
 )
-VERILATOR_GROUPS = ["vector", "ml_bench/ml_bench"]
+VERILATOR_GROUPS = ["vector", "ml_bench/Int8/aww", "ml_bench/Int8/toycar"]
 
 ETISS_DUMP_DIR = (
     f"{os.environ["WS_PATH"]}/gen_perfsim/target_sw/examples/Vicuna/custom/dump"
@@ -76,7 +80,7 @@ def read_addresses(target_sw: str) -> dict:
                         verilator_start = int(line.split(" ")[0], 16)
                     if f"<{END_LABEL}>:" in line:
                         verilator_end = int(line.split(" ")[0], 16)
-            
+
             break
 
         except:
@@ -196,6 +200,11 @@ def read_traces(
                     print(f"(AddressMatcher) Matched Verilator end: {verilator_index}")
                     verilator["end"] = verilator_index
 
+                asm_instr = int(split_line[1], base=16)
+                if asm_instr == 0x000d2c37:
+                    print("HERE RIGHT FUCKING HERE")
+                    exit()
+
                 verilator["asm"].append(int(split_line[1], base=16))
                 verilator["delta"].append(int(split_line[3]))
                 verilator["cycles"].append(int(split_line[2]))
@@ -261,14 +270,16 @@ def read_traces(
                 assign_stages = False
                 continue
 
-            row_i = indices["EX_stage"]
+            row_i = indices[SCALAR_TIMING_STAGE]
 
             try:
                 instr_name = etiss["instrs"][index]
-                if instr_name in V_SHORT_SIGNAL + VSET_INSTRS:
-                    row_i = indices["R_SIG_stage"]
+                if instr_name in V_SHORT_SIGNAL:
+                    row_i = indices[FAST_TIMING_STAGE]
+                elif instr_name in VSET_INSTRS:
+                    row_i = indices[VSET_TIMING_STAGE]
                 elif instr_name in V_LONG_SIGNAL:
-                    row_i = indices["V_EX_stage"]
+                    row_i = indices[SLOW_TIMING_STAGE]
             except Exception as e:
                 print("Exception: " + str(e))
                 print(f"Error index {index}")
@@ -397,7 +408,7 @@ def main() -> None:
         (
             f"{ins_e:8} |"
             f" {asm_e:08x} |"
-            f"{ins_v:8}"
+            f" {ins_v:8}   |"
             f" {asm_v:08x} |"
             f" dE: {d_e:7} |"
             f" dV: {d_v:7} |"
