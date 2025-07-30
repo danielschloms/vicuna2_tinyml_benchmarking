@@ -51,6 +51,12 @@ module vproc_top import vproc_pkg::*; #(
     end
     assign sync_rst_n = rst_sync_qn[3];
 
+    logic [4:0] issue_id;
+    logic [4:0] result_id;
+
+    assign issue_id = host_xif.issue_req.id;
+    assign result_id = host_xif.result.id; 
+
     ///////////////////////////////////////////////////////////////////////////
     // MAIN CORE INTEGRATION
 
@@ -128,7 +134,7 @@ module vproc_top import vproc_pkg::*; #(
     `ifdef XIF_ON
     localparam bit X_EXT = 1'b1;
     `else
-    localparam bit X_EXT = 1'b0;
+    localparam bit X_EXT = 1'b0;.issue_req.id
     `endif
 
     // eXtension Interface
