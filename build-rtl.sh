@@ -7,7 +7,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Defaults and setup
-SW_ARCH="rv32imf_zve32f"
+# SW_ARCH="rv32imf_zve32f"
 ARCH="rv32imf_zve32f"
 VLEN=1024
 VLANE_W=32
