@@ -11,4 +11,4 @@ benchmark_sources/signal/*
 
 match*.txt
 *pycache*/
-trace_comparison/__pycache__/
+trace_comparison/__pycache__/*
