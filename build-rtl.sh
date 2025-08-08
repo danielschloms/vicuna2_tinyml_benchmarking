@@ -2,31 +2,54 @@
 
 # Terminal color
 MAGENTA='\033[0;35m'
-GREEN='\033[0;32m'
+# GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Defaults and setup
-# SW_ARCH="rv32imf_zve32f"
-ARCH="rv32imf_zve32f"
-VLEN=1024
+ARCH="rv32im_zve32x"
+FLOAT_ARCH="rv32imf_zve32f"
+VLEN=64
 VLANE_W=32
 VMEM_W=32
 
 # Args
 TRACE="Off"
 TRACE_FULL="Off"
-DEBUG="Off"
 
-for arg in "$@"
-do
-    if [ $arg = "trace" ]; then
+# VLEN arg
+VLEN_NEXT="false"
+VLANE_NEXT="false"
+ARCH_NEXT="false"
+ARCH_SET="false"
+for arg in "$@"; do
+    if [ "$VLEN_NEXT" = "true" ]; then
+        VLEN="$arg"
+        VLEN_NEXT="false"
+    elif [ "$VLANE_NEXT" = "true" ]; then
+        VLANE_W="$arg"
+        VLANE_NEXT="false"
+    elif [ "$ARCH_NEXT" = "true" ]; then
+        ARCH="$arg"
+        ARCH_NEXT="false"
+        ARCH_SET="true"
+    elif [ "$arg" = "vlen" ]; then
+        VLEN_NEXT="true"
+    elif [ "$arg" = "vlane" ]; then
+        VLANE_NEXT="true"
+    elif [ "$arg" = "arch" ]; then
+        ARCH_NEXT="true"
+    elif [ "$arg" = "trace" ]; then
         TRACE="On"
         TRACE_FULL="On"
-    elif [ $arg = "debug" ]; then
-        DEBUG="On"
+    elif [ "$arg" = "float" ]; then
+        if [ "$ARCH_SET" = "true" ]; then
+            >&2 echo "Setting arch & float!"
+            exit 1
+        fi
+        ARCH=$FLOAT_ARCH
     else
-        echo "Args: [ml, debug, trace]"
+        >&2 echo "Args: [trace, float, vlen <VLEN>, vlane <VLANE_W>, arch <ARCH>]"
         exit 1
     fi
 done
@@ -35,40 +58,21 @@ MODEL_FLAGS="-DVREG_W=$VLEN -DVLANE_W=$VLANE_W -DVMEM_W=$VMEM_W -DTRACE=$TRACE -
 
 # Paths
 PRJ_DIR=$WS_PATH/vicuna2_tinyml_benchmarking
-MODEL_BUILD_DIR=$PRJ_DIR/build_model/build
-SRC_BUILD_DIR=$PRJ_DIR/build_custom/build
+CMAKE_SRC_DIR=$PRJ_DIR/build_model
+MODEL_BUILD_DIR=$CMAKE_SRC_DIR/$ARCH/zvl${VLEN}b/vlane${VLANE_W}
 
-rm -rf $MODEL_BUILD_DIR
-rm -rf $SRC_BUILD_DIR
-
-mkdir -p $MODEL_BUILD_DIR
-mkdir -p $SRC_BUILD_DIR
-
-# Build Verilator model
-cd $MODEL_BUILD_DIR
-
-cmake .. -DRISCV_ARCH=$ARCH $MODEL_FLAGS
-make -j$(nproc)
-echo -e "${MAGENTA}Model done${NC}"
+echo -e "${BLUE}Arch:${NC} $ARCH"
 echo -e "${BLUE}Model Flags:${NC} $MODEL_FLAGS"
 
-# Build programs
-# cd $SRC_BUILD_DIR
+rm -rf $MODEL_BUILD_DIR
 
-# MEM_W=32
-# SW_TRACE="off"
+mkdir -p $MODEL_BUILD_DIR
 
-# SOURCE_FLAGS="-DMIN_VLEN=$VLEN -DMEM_W=$MEM_W -DTRACE=$SW_TRACE"
+# Build Verilator model
+cd "$CMAKE_SRC_DIR" || exit
 
-# if [ "$#" -eq 1 ] && [ $1 = "debug" ]; then
-#     cmake .. -DRISCV_ARCH=$SW_ARCH $SOURCE_FLAGS -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-g -Og" -DCMAKE_EXPORT_COMPILE_COMMANDS=On
-# elif [ "$#" -eq 0 ] || [ $1 = "release" ]; then
-#     cmake .. -DRISCV_ARCH=$SW_ARCH $SOURCE_FLAGS -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=On
-# else
-#     echo "Usage: build.sh [debug | release]"
-#     exit 1
-# fi
+cmake -S . -B $MODEL_BUILD_DIR -DRISCV_ARCH=$ARCH $MODEL_FLAGS
+cd "$MODEL_BUILD_DIR" || exit
 
-# make -j$(nproc)
-# echo -e "${MAGENTA}Programs done${NC}"
-
+make -j$(nproc)
+echo -e "${MAGENTA}Model done${NC}"
