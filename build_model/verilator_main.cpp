@@ -92,12 +92,11 @@ private:
 constexpr auto UART_DATA_REGISTER = 0xFF000000u;
 constexpr auto UART_STATUS_REGISTER = 0xFF000004u;
 
-constexpr auto MAIN_ADDRESS = 0x00002000u;
 constexpr auto FAIL_MISMATCH_ADDRESS = 0x00000078u;
 constexpr auto FAIL_INTERRUPT_ADDRESS = 0x000000074u;
 constexpr auto SUCCESS_ADDRESS = 0x0000007Cu;
 
-constexpr auto START_TRACE_ADDRESS = MAIN_ADDRESS;
+constexpr auto START_TRACE_ADDRESS = 0x100141d8;
 constexpr auto STALL_CYCLES_THRESHOLD = 1'000'000;
 
 constexpr auto MEMORY_LATENCY = 1; // TODO: This should be a build argument
@@ -220,7 +219,7 @@ auto update_counts(Vvproc_top *top, bool inst_trace_out,
 // --- Main ---
 
 int main(int argc, char **argv) {
-  fprintf(stderr, "Starting Verilator Main()\n");
+  printf("Starting Verilator Main()\n");
 
   int exit_code = 0;
 
@@ -235,7 +234,7 @@ int main(int argc, char **argv) {
 
   int csv_out = 0;
 
-  fprintf(stderr, "Hello! Testing: %d\n", argc);
+  printf("Hello! Testing: %d\n", argc);
 
   bool inst_trace_out = false;
 
@@ -460,7 +459,7 @@ int main(int argc, char **argv) {
 
         // Need to use PC to exit/abort due to I cache
         current_IF_PC = top->vproc_top->core->pc_if;
-        current_WB_PC = top->vproc_top->core->pc_wb;
+        current_WB_PC = top->vproc_top->core->instruction_wb_pc;
 
         //////////
         // Check Exit Conditions
@@ -475,7 +474,7 @@ int main(int argc, char **argv) {
         if (end_cnt > 0 || ((top->mem_req_o == 1 || top->mem_ireq_o == 1) &&
                             current_WB_PC == SUCCESS_ADDRESS)) {
           end_cnt++;
-          fprintf(stderr, "SUCCESS: TEST PASS - Output Match\n");
+          printf("SUCCESS: TEST PASS - Output Match\n");
           exiting = true;
         }
 
@@ -643,22 +642,21 @@ auto test_memory_mapped(Vvproc_top *top,
 }
 
 auto print_metrics() -> void {
-  fprintf(stderr, "Total Cycles: %lu\n", cycles);
-  fprintf(stderr, "Instruction Count: %lu CPI : %f \n\n", instructions,
-          ((float)(cycles)) / ((float)instructions));
+  printf("Total Cycles: %lu\n", cycles);
+  printf("Instruction Count: %lu CPI : %f \n\n", instructions,
+         ((float)(cycles)) / ((float)instructions));
 
-  fprintf(stderr, "Number of Vector Instructions Executed: %d  \n",
-          num_vec_instr);
-  fprintf(stderr, "AVG VL Elements: %f  \n",
-          ((float)(sum_vec_lengths)) / ((float)num_vec_instr));
-  fprintf(stderr, "AVG VL Bytes: %f  \n\n",
-          ((float)(sum_vec_lengths_bytes)) / ((float)num_vec_instr));
-  fprintf(stderr, "AVG VREG Usage %%: %f  \n\n",
-          ((float)(sum_vec_percentage)) / ((float)num_vec_instr) * 100);
+  printf("Number of Vector Instructions Executed: %d  \n", num_vec_instr);
+  printf("AVG VL Elements: %f  \n",
+         ((float)(sum_vec_lengths)) / ((float)num_vec_instr));
+  printf("AVG VL Bytes: %f  \n\n",
+         ((float)(sum_vec_lengths_bytes)) / ((float)num_vec_instr));
+  printf("AVG VREG Usage %%: %f  \n\n",
+         ((float)(sum_vec_percentage)) / ((float)num_vec_instr) * 100);
 
-  fprintf(stderr, "Vector Loads     : %d\n", vector_loads);
-  fprintf(stderr, "Vector Stores    : %d\n", vector_stores);
-  fprintf(stderr, "Other Vector Ops : %d\n", other_vector_ops);
+  printf("Vector Loads     : %d\n", vector_loads);
+  printf("Vector Stores    : %d\n", vector_stores);
+  printf("Other Vector Ops : %d\n", other_vector_ops);
 }
 
 auto check_for_stall() -> bool {
@@ -801,42 +799,56 @@ auto update_counts(Vvproc_top *top, bool inst_trace_out,
 
   abort_cnt = (top->mem_req_o == mem_req_o_tmp) ? abort_cnt + 1 : 0;
 
+  // static constexpr auto load_fp_opcode = 0x7;
+  // static constexpr auto store_fp_opcode = 0x27;
+  // static constexpr auto vector_opcode = 0x57;
+  // static constexpr auto vwxunary0_funct6 = 0b010000;
+  // static constexpr auto opmvv_funct3 = 2;
+
+  // static constexpr auto funct3_offset = 12;
+  // static constexpr auto funct3_bitmask = 0b111;
+  // static constexpr auto funct6_offset = 26;
+  // static constexpr auto funct6_bitmask = 0b111111;
+  // static constexpr auto opcode_bitmask = 0b1111111;
+
   if (!exiting) {
     cycles++;
     if (inst_trace_out and current_WB_PC != last_WB_PC) {
-      auto instr = top->vproc_top->core->instruction_wb;
-      auto pc = top->vproc_top->core->pc_wb;
-      auto opcode = instr & 0b1111111;
-      auto ls_width = (instr >> 12) & 0b111;
-      static constexpr auto load_fp_opcode = 0x7;
-      static constexpr auto store_fp_opcode = 0x27;
-      static constexpr auto vector_opcode = 0x57;
-      static bool vls_instr_waiting = false;
+      auto const instr = top->vproc_top->core->instruction_wb;
+      auto const pc = top->vproc_top->core->instruction_wb_pc;
+      // auto const opcode = instr & opcode_bitmask;
+      // auto const funct3 = (instr >> funct3_offset) & funct3_bitmask;
+      // auto const funct6 = (instr >> funct6_offset) & funct6_bitmask;
+
+      // auto const ls_width = (instr >> 12) & 0b111;
+
+      // static bool vls_instr_waiting = false;
 
       // If vector instruction is leaving, print with previous cycle
-      if (vls_instr_waiting) {
-        int stall = top->vproc_top->core->data_stall_wb;
-        print_trace(pc_to_retire, instr_to_retire, cycles - 1);
-        vls_instr_waiting = false;
-      }
+      // if (vls_instr_waiting) {
+      //   // int stall = top->vproc_top->core->data_stall_wb;
+      //   print_trace(pc_to_retire, instr_to_retire, cycles - 1);
+      //   vls_instr_waiting = false;
+      // }
 
       // Vector loads are differentiated by width, 0 or width > 4 is
       // vector
-      auto is_vector_ls =
-          (opcode == load_fp_opcode or opcode == store_fp_opcode) and
-          (ls_width == 0 or ls_width > 0b100);
+      // auto is_vector_ls =
+      //     (opcode == load_fp_opcode or opcode == store_fp_opcode) and
+      //     (ls_width == 0 or ls_width > 0b100);
 
-      // auto is_vset = ((instr >> 12) & 0b111) == 7;
+      // auto is_vwxunary0 = (opcode == vector_opcode) &&
+      //                     (funct3 == opmvv_funct3) &&
+      //                     (funct6 == vwxunary0_funct6);
 
-      // Don't print/retire vector loads/stores immediately, wait for
-      // next instruction
-      if (is_vector_ls) {
-        vls_instr_waiting = true;
-        instr_to_retire = instr;
-        pc_to_retire = pc;
-      } else {
-        print_trace(pc, instr, cycles);
-      }
+      // Don't print/retire vector loads/stores & vwxunary0 immediately, wait
+      // for next instruction if (is_vector_ls || is_vwxunary0) {
+      //   vls_instr_waiting = true;
+      //   instr_to_retire = instr;
+      //   pc_to_retire = pc;
+      // } else {
+      print_trace(pc, instr, cycles);
+      // }
     }
 
     if (current_WB_PC != last_WB_PC) {
