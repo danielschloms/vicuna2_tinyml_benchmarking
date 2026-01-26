@@ -3,6 +3,7 @@ Toolchain/*
 build_model/build/*
 build_benchmarks/build/*
 build_custom/build/*
+build_from_other/*
 
 benchmark_sources/third_party/*
 benchmark_sources/tflite-micro
