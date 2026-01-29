@@ -56,9 +56,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Paths
-PRJ_DIR=$WS_PATH/vicuna2_tinyml_benchmarking
-CMAKE_SRC_DIR=$PRJ_DIR/build_model
+VICUNA_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+PROJECT_ROOT_DIR="$(dirname "$VICUNA_DIR")"
+VERILATOR_DIR=$PROJECT_ROOT_DIR/Third_Party/Verilator
+CMAKE_SRC_DIR=$VICUNA_DIR/build_model
 MODEL_BUILD_DIR=$CMAKE_SRC_DIR/$ARCH/zvl${VLEN}b/vlane${VLANE_W}
+
+export VERILATOR_DIR=$VERILATOR_DIR
 
 echo -e "${BLUE}Arch:${NC} $ARCH"
 echo -e "${BLUE}Model Flags:${NC} $MODEL_FLAGS"

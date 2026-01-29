@@ -58,7 +58,7 @@ echo -e "Running ${BLUE}$TARGET_SW${NC}"
 # Check if target software exists
 
 # Verilator executable & args
-PRJ_DIR="$WS_PATH/vicuna2_tinyml_benchmarking"
+PRJ_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 ZVL_STRING="zvl${VLEN}b"
 VLANE_STRING="vlane${VLANE_W}"
 GCC_ARCH_SUBPATH="${ARCH}/${ZVL_STRING}"
@@ -67,7 +67,7 @@ HW_ARCH_SUBPATH="${GCC_ARCH_SUBPATH}/${VLANE_STRING}"
 MODEL_BUILD_DIR="$PRJ_DIR/build_model/${HW_ARCH_SUBPATH}"
 PROG_DIR="$PRJ_DIR/build_from_other/${GCC_ARCH_SUBPATH}/prog"
 PROG_FILE="$PROG_DIR/prog_$TARGET_SW.txt"
-COMPARISON_DIR="$WS_PATH/rvv_testing/comparison"
+COMPARISON_DIR="$WS_PATH/Perf_Comparison/comparison"
 TRACE_DIR="$COMPARISON_DIR/verilator/${HW_ARCH_SUBPATH}"
 mkdir -p $TRACE_DIR
 
