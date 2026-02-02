@@ -18,7 +18,7 @@ ARCH="rv32im_zve32x"
 VLEN="64"
 VLANE_W="32"
 TARGET_SW=""
-
+TIME=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -41,6 +41,10 @@ while [[ $# -gt 0 ]]; do
       TARGET_SW="$2"
       shift # past argument
       shift # past value
+      ;;
+    --time)
+      TIME="time "
+      shift
       ;;
     -*|--*)
       >&2 echo "Unknown option $1"
@@ -81,6 +85,6 @@ VERILATOR_ARGS="$PROG_FILE $MEM_W $MEM_SIZE $MEM_LATENCY $EXTRA_CYCLES $INSTR_TR
 # VERILATOR_ARGS="$PROG_FILE $MEM_W $MEM_SIZE $MEM_LATENCY $EXTRA_CYCLES"
 VERILATOR_INVOKE="$VERILATOR_EXE $VERILATOR_ARGS"
 
-time $VERILATOR_INVOKE
+${TIME}${VERILATOR_INVOKE}
 echo -e "${MAGENTA}Done${NC}"
 
